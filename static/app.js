@@ -198,6 +198,36 @@ function ensureMap() {
   }).addTo(map);
 }
 
+function trainStatusLabel(status) {
+  return {
+    approaching: "진입 중",
+    arrived: "도착",
+    departed: "출발",
+    between: "이동 중",
+    estimated: "추정 위치",
+    before_leg: "탑승역으로 오는 중",
+  }[status] || status;
+}
+
+function displaySelectedSubwayPosition(t, trackingMode) {
+  const icon = L.divIcon({
+    html: '<span aria-hidden="true">🚇</span>',
+    className: "subway-position-marker",
+    iconSize: [32, 32],
+    iconAnchor: [16, 16],
+  });
+  const latLng = [t.lat, t.lon];
+  if (!trainMarker) {
+    trainMarker = L.marker(latLng, { icon }).addTo(map);
+  } else {
+    trainMarker.setLatLng(latLng);
+    trainMarker.setIcon(icon);
+  }
+  const modeLabel = trackingMode === "timer" ? " (시간 기반 추정)" : "";
+  trainMarker.bindTooltip(`열차 ${t.train_no} · ${t.station_name} ${trainStatusLabel(t.status)}${modeLabel}`);
+  return trainMarker;
+}
+
 function renderTrack(snap) {
   ensureMap();
   const coords = (snap.leg.shape && snap.leg.shape.length)
@@ -213,14 +243,9 @@ function renderTrack(snap) {
   $("track-leg").textContent = `${snap.leg.route} · ${snap.leg.start} → ${snap.leg.end} (${snap.leg_idx + 1}/${snap.leg_count}구간)`;
   const t = snap.train;
   if (t) {
-    if (!trainMarker) {
-      trainMarker = L.marker([t.lat, t.lon]).addTo(map);
-    } else {
-      trainMarker.setLatLng([t.lat, t.lon]);
-    }
     const modeLabel = snap.tracking_mode === "timer" ? " (시간 기반 추정)" : "";
-    const statusKo = { approaching: "진입 중", arrived: "도착", departed: "출발",
-      between: "이동 중", estimated: "추정 위치", before_leg: "탑승역으로 오는 중" }[t.status] || t.status;
+    const statusKo = trainStatusLabel(t.status);
+    displaySelectedSubwayPosition(t, snap.tracking_mode);
     $("track-status").textContent = `열차 ${t.train_no} · ${t.station_name} ${statusKo}${modeLabel}`;
   } else {
     $("track-status").textContent = "열차 위치 수신 대기 중…";
