@@ -25,6 +25,16 @@ class SeoulApiError(Exception):
 
 def _check(data: dict, context: str) -> None:
     err = data.get("errorMessage") or data.get("RESULT") or {}
+    if not err and (data.get("code") or data.get("status") not in (None, 200, "200")):
+        # Some Seoul Open API failures come back as a top-level object such as
+        # {"status": 500, "code": "ERROR-337", "message": "..."} instead
+        # of the usual errorMessage/RESULT wrapper. Treat them as API errors;
+        # otherwise callers see an empty realtimeArrivalList and the UI claims
+        # there are simply no approaching trains.
+        err = {
+            "code": data.get("code") or f"HTTP-{data.get('status')}",
+            "message": data.get("message", ""),
+        }
     code = err.get("code", "INFO-000")
     if code == "INFO-000":
         return

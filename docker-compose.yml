@@ -5,7 +5,7 @@ services:
     image: subway-tracker:local
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
       DB_PATH: /app/data/tracker.db
       STATIONS_CSV: /app/data/stations.csv
