@@ -29,6 +29,16 @@ CREATE TABLE IF NOT EXISTS points (
     estimated INTEGER NOT NULL DEFAULT 0,
     UNIQUE(journey_id, ts)
 );
+CREATE TABLE IF NOT EXISTS route_options_cache (
+    start_name TEXT NOT NULL,
+    start_line TEXT NOT NULL,
+    end_name TEXT NOT NULL,
+    end_line TEXT NOT NULL,
+    itineraries_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (start_name, start_line, end_name, end_line)
+);
 """
 
 
@@ -68,6 +78,45 @@ class Database:
 
     def load_itinerary(self, row: sqlite3.Row) -> Itinerary:
         return Itinerary.model_validate(json.loads(row["itinerary_json"]))
+
+    def get_cached_route_options(
+        self,
+        start_name: str,
+        start_line: str,
+        end_name: str,
+        end_line: str,
+    ) -> list[Itinerary] | None:
+        row = self.conn.execute(
+            "SELECT itineraries_json FROM route_options_cache "
+            "WHERE start_name = ? AND start_line = ? AND end_name = ? AND end_line = ?",
+            (start_name, start_line, end_name, end_line),
+        ).fetchone()
+        if row is None:
+            return None
+        return [Itinerary.model_validate(item) for item in json.loads(row["itineraries_json"])]
+
+    def cache_route_options(
+        self,
+        start_name: str,
+        start_line: str,
+        end_name: str,
+        end_line: str,
+        itineraries: list[Itinerary],
+    ) -> None:
+        now = int(time.time())
+        payload = json.dumps(
+            [itinerary.model_dump(mode="json") for itinerary in itineraries],
+            ensure_ascii=False,
+        )
+        self.conn.execute(
+            "INSERT INTO route_options_cache "
+            "(start_name, start_line, end_name, end_line, itineraries_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(start_name, start_line, end_name, end_line) DO UPDATE SET "
+            "itineraries_json = excluded.itineraries_json, updated_at = excluded.updated_at",
+            (start_name, start_line, end_name, end_line, payload, now, now),
+        )
+        self.conn.commit()
 
     def add_point(self, journey_id: int, leg_idx: int, p: TrackPoint) -> None:
         # one point per second; the latest write wins (an arrival point emitted

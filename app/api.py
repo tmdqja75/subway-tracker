@@ -30,6 +30,10 @@ class BoardRequest(BaseModel):
     train_no: str | None = None  # None: board on an uncovered line (timer mode)
 
 
+def _route_cache_key(start, end) -> tuple[str, str, str, str]:
+    return (normalize_name(start.name), start.line, normalize_name(end.name), end.line)
+
+
 @router.get("/stations/search")
 async def station_search(request: Request, q: str):
     registry = request.app.state.stations
@@ -46,6 +50,15 @@ async def routes(request: Request, body: RouteSearchRequest):
         raise HTTPException(404, f"station not found: {body.start}")
     if not end:
         raise HTTPException(404, f"station not found: {body.end}")
+    db = request.app.state.manager.db
+    cache_key = _route_cache_key(start, end)
+    cached = db.get_cached_route_options(*cache_key)
+    if cached is not None:
+        log.debug(
+            "route cache hit start=%s/%s end=%s/%s",
+            cache_key[0], cache_key[1], cache_key[2], cache_key[3],
+        )
+        return [it.model_dump() for it in cached]
     try:
         itineraries = await search_routes(
             settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
@@ -54,6 +67,7 @@ async def routes(request: Request, body: RouteSearchRequest):
         raise HTTPException(502, str(e))
     if not itineraries:
         raise HTTPException(404, "no subway routes found")
+    db.cache_route_options(*cache_key, itineraries)
     return [it.model_dump() for it in itineraries]
 
 
