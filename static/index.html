@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Subway Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><h1>🚇 Subway Tracker</h1></header>
+
+<!-- 1. search -->
+<section id="view-search" class="view">
+  <div class="field">
+    <label>출발역</label>
+    <input id="start-input" type="text" placeholder="예: 강남" autocomplete="off">
+    <ul id="start-suggest" class="suggest"></ul>
+  </div>
+  <div class="field">
+    <label>도착역</label>
+    <input id="end-input" type="text" placeholder="예: 서울" autocomplete="off">
+    <ul id="end-suggest" class="suggest"></ul>
+  </div>
+  <button id="search-btn" class="primary">경로 검색</button>
+  <p id="search-error" class="error"></p>
+</section>
+
+<!-- 2. route list -->
+<section id="view-routes" class="view hidden">
+  <h2>경로 선택</h2>
+  <div id="route-list"></div>
+  <button id="routes-back" class="secondary">← 다시 검색</button>
+</section>
+
+<!-- 3. train picker -->
+<section id="view-picker" class="view hidden">
+  <h2 id="picker-title">열차 선택</h2>
+  <p id="picker-sub" class="sub"></p>
+  <div id="train-list"></div>
+  <button id="picker-refresh" class="secondary">새로고침</button>
+  <button id="picker-timer-board" class="secondary hidden">실시간 정보 없음 — 탑승했어요 (시간 기반 추적)</button>
+  <button id="picker-cancel" class="danger">여정 취소</button>
+</section>
+
+<!-- 4. tracking -->
+<section id="view-track" class="view hidden">
+  <div id="map"></div>
+  <div id="track-info" class="card">
+    <div id="track-leg"></div>
+    <div id="track-status"></div>
+    <div id="track-points" class="sub"></div>
+  </div>
+  <div class="btn-row">
+    <button id="alight-btn" class="primary">지금 내렸어요</button>
+    <button id="missed-btn" class="secondary">열차 잘못 탔어요</button>
+    <button id="track-cancel" class="danger">여정 취소</button>
+  </div>
+</section>
+
+<!-- 5. done -->
+<section id="view-done" class="view hidden">
+  <h2 id="done-title"></h2>
+  <p id="done-msg"></p>
+  <button id="retry-push-btn" class="primary hidden">Reitti 전송 재시도</button>
+  <button id="new-journey-btn" class="secondary">새 여정</button>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
