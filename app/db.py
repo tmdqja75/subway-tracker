@@ -122,6 +122,8 @@ class Database:
                             "end": leg.end_name,
                             "stations": [s.model_dump() for s in leg.stations],
                             "shape": leg.shape,
+                            "transfer_walk_shape": leg.transfer_walk_shape,
+                            "transfer_walk_time": leg.transfer_walk_time,
                         }
                         for i, leg in enumerate(itinerary.legs)
                     ],

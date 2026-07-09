@@ -152,6 +152,71 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
     assert (37.4885, 127.0500) in logged
 
 
+async def test_transfer_walk_linestring_logged_before_next_subway_leg(manager, monkeypatch):
+    first = SubwayLeg(
+        route="수도권2호선", line_key=None, section_time=120,
+        start_name="강남", end_name="사당",
+        stations=[
+            LegStation(index=0, name="강남", lat=37.4980, lon=127.0277),
+            LegStation(index=1, name="사당", lat=37.4766, lon=126.9816),
+        ],
+        shape=[[37.4980, 127.0277], [37.4766, 126.9816]],
+        transfer_walk_time=120,
+        transfer_walk_shape=[
+            [37.4766, 126.9816],
+            [37.4767, 126.9813],
+            [37.4768, 126.9817],
+        ],
+    )
+    second = SubwayLeg(
+        route="수도권4호선", line_key=None, section_time=120,
+        start_name="사당", end_name="서울역",
+        stations=[
+            LegStation(index=0, name="사당", lat=37.4768, lon=126.9817),
+            LegStation(index=1, name="서울역", lat=37.5535, lon=126.9728),
+        ],
+        shape=[[37.4768, 126.9817], [37.5535, 126.9728]],
+    )
+    itinerary = Itinerary(
+        total_time=360, transfer_count=1, total_walk_time=120, fare=1600,
+        legs=[first, second],
+        summary=[
+            "🚇 수도권2호선: 강남 → 사당",
+            "🚶 도보 2분",
+            "🚇 수도권4호선: 사당 → 서울역",
+        ],
+    )
+    pushed = []
+
+    async def fake_push(url, token, points):
+        pushed.extend(points)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            FakeTime._t += 10
+            return FakeTime._t
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+
+    j = await manager.start_journey(itinerary)
+    await manager.board(None)
+    await manager.alight()
+    assert j.state == JourneyState.AWAITING_BOARD
+
+    await manager.board(None)
+    await manager.alight()
+
+    assert j.state == JourneyState.COMPLETED
+    logged = {(round(p.lat, 4), round(p.lon, 4)) for p in pushed}
+    assert (37.4767, 126.9813) in logged
+
+
 async def test_missed_train_returns_to_picker(manager, monkeypatch):
     async def fake_positions(key, line):
         return []

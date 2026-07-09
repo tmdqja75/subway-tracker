@@ -16,6 +16,33 @@ class TmapError(Exception):
     pass
 
 
+def _parse_linestring(linestring: str) -> list[list[float]]:
+    """Parse Tmap "lon,lat lon,lat ..." geometry into [lat, lon] pairs."""
+    shape = []
+    for pair in linestring.split():
+        try:
+            lon_s, lat_s = pair.split(",")
+            shape.append([float(lat_s), float(lon_s)])
+        except ValueError:
+            continue
+    return shape
+
+
+def _walk_linestring_shape(leg: dict) -> list[list[float]]:
+    """Return WALK geometry from passShape, falling back to step linestrings."""
+    shape = _parse_linestring(leg.get("passShape", {}).get("linestring", ""))
+    if shape:
+        return shape
+
+    for step in leg.get("steps", []):
+        step_shape = _parse_linestring(step.get("linestring", ""))
+        if shape and step_shape and shape[-1] == step_shape[0]:
+            shape.extend(step_shape[1:])
+        else:
+            shape.extend(step_shape)
+    return shape
+
+
 async def search_routes(
     app_key: str,
     start_lon: float,
@@ -51,11 +78,17 @@ async def search_routes(
     for it in plan.get("itineraries", []):
         subway_legs = []
         summary = []
+        previous_mode = None
+        pending_transfer_walk = None
         for leg in it.get("legs", []):
             mode = leg.get("mode")
             start_name = leg.get("start", {}).get("name", "?")
             end_name = leg.get("end", {}).get("name", "?")
             if mode == "SUBWAY":
+                if pending_transfer_walk and subway_legs:
+                    subway_legs[-1].transfer_walk_time = pending_transfer_walk["time"]
+                    subway_legs[-1].transfer_walk_shape = pending_transfer_walk["shape"]
+                pending_transfer_walk = None
                 route = leg.get("route", "")
                 # live API uses "stations"; some docs say "stationList"
                 psl = leg.get("passStopList", {})
@@ -70,13 +103,7 @@ async def search_routes(
                     for i, s in enumerate(raw_stations)
                 ]
                 # passShape.linestring: "lon,lat lon,lat ..." — the real track geometry
-                shape = []
-                for pair in leg.get("passShape", {}).get("linestring", "").split():
-                    try:
-                        lon_s, lat_s = pair.split(",")
-                        shape.append([float(lat_s), float(lon_s)])
-                    except ValueError:
-                        continue
+                shape = _parse_linestring(leg.get("passShape", {}).get("linestring", ""))
                 subway_legs.append(
                     SubwayLeg(
                         route=route,
@@ -93,6 +120,14 @@ async def search_routes(
                 sec = int(leg.get("sectionTime", 0))
                 if sec >= 60:
                     summary.append(f"🚶 도보 {sec // 60}분")
+                pending_transfer_walk = (
+                    {"time": sec, "shape": _walk_linestring_shape(leg)}
+                    if previous_mode == "SUBWAY"
+                    else None
+                )
+            else:
+                pending_transfer_walk = None
+            previous_mode = mode
         if not subway_legs:
             continue  # walk-only / bus itineraries are out of scope
         fare = it.get("fare", {}).get("regular", {}).get("totalFare")

@@ -69,6 +69,7 @@ class ActiveJourney:
         self.lost_polls = 0
         self.last_status: TrainStatus | None = None
         self.error: str | None = None
+        self.transfer_started_at: float | None = None
         # path logging: arrivals up to this station index are already written,
         # at last_arrival_time; shape_idx maps station index -> vertex in leg.shape
         self.logged_idx = 0
@@ -135,11 +136,14 @@ class JourneyManager:
         j = self._require_active()
         if j.state != JourneyState.AWAITING_BOARD:
             raise ValueError(f"cannot board in state {j.state}")
-        now = int(time.time())
+        now = time.time()
+        if j.leg_idx > 0:
+            self._log_transfer_walk(j, j.leg_idx - 1, now)
         j.train_no = train_no
         j.tracking_mode = "realtime" if (train_no and j.leg.line_key) else "timer"
         j.state = JourneyState.ON_TRAIN
-        j.leg_started_at = now
+        j.leg_started_at = int(now)
+        j.transfer_started_at = None
         j.prepare_leg()
         # user is standing on the platform: log the boarding station now
         start = j.leg.stations[0]
@@ -149,7 +153,7 @@ class JourneyManager:
             state=j.state,
             train_no=train_no,
             tracking_mode=j.tracking_mode,
-            leg_started_at=now,
+            leg_started_at=int(now),
         )
         self._start_tracker()
 
@@ -352,6 +356,36 @@ class JourneyManager:
         j.logged_idx = to_idx
         j.last_arrival_time = now
 
+    def _log_transfer_walk(self, j: ActiveJourney, prev_leg_idx: int, now: float) -> None:
+        """Write the Tmap WALK linestring between two subway legs."""
+        prev_leg = j.itinerary.legs[prev_leg_idx]
+        pts = prev_leg.transfer_walk_shape
+        if not pts:
+            return
+
+        if j.transfer_started_at is None:
+            span = max(float(prev_leg.transfer_walk_time), 1.0)
+            start_t = now - span
+        else:
+            start_t = j.transfer_started_at
+            span = max(now - start_t, 1.0)
+
+        max_pts = max(min(len(pts), int(span)), 2)
+        if len(pts) > max_pts:
+            step = (len(pts) - 1) / (max_pts - 1)
+            pts = [pts[round(i * step)] for i in range(max_pts)]
+
+        log.debug(
+            "journey %s: transfer walk after leg %d raw_pts=%d written_pts=%d span=%.1fs",
+            j.id, prev_leg_idx, len(prev_leg.transfer_walk_shape), max(len(pts) - 1, 0), span,
+        )
+        n = len(pts)
+        for i, (lat, lon) in enumerate(pts):
+            if i == 0:
+                continue  # alight point was already written as the previous leg end
+            ts = int(start_t + span * (i / (n - 1))) if n > 1 else int(now)
+            self._emit_at(j, lat, lon, ts, estimated=True, leg_idx=prev_leg_idx)
+
     def _interpolate(self, j: ActiveJourney, now: float) -> tuple[float, float, bool]:
         stations = j.leg.stations
         a = stations[j.anchor_idx]
@@ -403,9 +437,17 @@ class JourneyManager:
     def _emit(self, j: ActiveJourney, lat: float, lon: float, estimated: bool) -> None:
         self._emit_at(j, lat, lon, int(time.time()), estimated)
 
-    def _emit_at(self, j: ActiveJourney, lat: float, lon: float, ts: int, estimated: bool) -> None:
+    def _emit_at(
+        self,
+        j: ActiveJourney,
+        lat: float,
+        lon: float,
+        ts: int,
+        estimated: bool,
+        leg_idx: int | None = None,
+    ) -> None:
         self.db.add_point(
-            j.id, j.leg_idx,
+            j.id, j.leg_idx if leg_idx is None else leg_idx,
             TrackPoint(lat=lat, lon=lon, ts=ts, estimated=estimated),
         )
 
@@ -423,6 +465,7 @@ class JourneyManager:
         if j.is_last_leg:
             await self._push_to_reitti(j)
             return
+        j.transfer_started_at = time.time()
         j.leg_idx += 1
         j.state = JourneyState.AWAITING_BOARD
         j.train_no = None
@@ -475,6 +518,8 @@ class JourneyManager:
                 "covered": leg.line_key is not None,
                 "stations": [s.model_dump() for s in leg.stations],
                 "shape": leg.shape,
+                "transfer_walk_shape": leg.transfer_walk_shape,
+                "transfer_walk_time": leg.transfer_walk_time,
             },
             "summary": j.itinerary.summary,
             "train": j.last_status.model_dump() if j.last_status else None,

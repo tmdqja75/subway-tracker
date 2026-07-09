@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class JourneyState(StrEnum):
@@ -29,7 +29,7 @@ class LegStation(BaseModel):
 
 
 class SubwayLeg(BaseModel):
-    """One subway ride within an itinerary. Walk legs are not tracked."""
+    """One subway ride within an itinerary."""
 
     route: str  # Tmap route name, e.g. "수도권3호선"
     line_key: str | None  # normalized key for Seoul realtime APIs, None if uncovered
@@ -38,7 +38,11 @@ class SubwayLeg(BaseModel):
     end_name: str
     stations: list[LegStation]
     # actual track geometry from Tmap passShape.linestring, as [lat, lon] pairs
-    shape: list[list[float]] = []
+    shape: list[list[float]] = Field(default_factory=list)
+    # walking transfer after this subway leg before the next subway leg, from
+    # the intervening Tmap WALK leg's linestring, as [lat, lon] pairs
+    transfer_walk_shape: list[list[float]] = Field(default_factory=list)
+    transfer_walk_time: int = 0
 
 
 class Itinerary(BaseModel):
