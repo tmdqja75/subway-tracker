@@ -91,6 +91,54 @@ class Database:
             for r in rows
         ]
 
+    def list_debug_journeys(self, limit: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM journeys ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        journeys = []
+        for row in rows:
+            itinerary = self.load_itinerary(row)
+            point_rows = self.conn.execute(
+                "SELECT leg_idx, lat, lon, ts, estimated FROM points "
+                "WHERE journey_id = ? ORDER BY ts",
+                (row["id"],),
+            ).fetchall()
+            journeys.append(
+                {
+                    "journey_id": row["id"],
+                    "created_at": row["created_at"],
+                    "state": row["state"],
+                    "current_leg_idx": row["current_leg_idx"],
+                    "train_no": row["train_no"],
+                    "tracking_mode": row["tracking_mode"],
+                    "summary": itinerary.summary,
+                    "legs": [
+                        {
+                            "idx": i,
+                            "route": leg.route,
+                            "line_key": leg.line_key,
+                            "start": leg.start_name,
+                            "end": leg.end_name,
+                            "stations": [s.model_dump() for s in leg.stations],
+                            "shape": leg.shape,
+                        }
+                        for i, leg in enumerate(itinerary.legs)
+                    ],
+                    "points": [
+                        {
+                            "leg_idx": p["leg_idx"],
+                            "lat": p["lat"],
+                            "lon": p["lon"],
+                            "ts": p["ts"],
+                            "estimated": bool(p["estimated"]),
+                        }
+                        for p in point_rows
+                    ],
+                }
+            )
+        return journeys
+
     def point_count(self, journey_id: int) -> int:
         return self.conn.execute(
             "SELECT COUNT(*) FROM points WHERE journey_id = ?", (journey_id,)

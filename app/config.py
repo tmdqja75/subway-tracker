@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     reitti_token: str = ""
 
     poll_interval_seconds: int = 15
+    log_level: str = "INFO"
     stations_csv: Path = BASE_DIR / "data" / "stations.csv"
     db_path: Path = BASE_DIR / "data" / "tracker.db"
 

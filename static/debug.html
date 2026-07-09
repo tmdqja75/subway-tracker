@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Subway Tracker Debug Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>🗺️ Location Debug Map</h1>
+  <a href="/" class="header-link">Tracker</a>
+</header>
+
+<section id="view-debug" class="view debug-view">
+  <div class="card debug-controls">
+    <label for="journey-select">Journey</label>
+    <select id="journey-select"></select>
+    <button id="debug-refresh" class="secondary">Refresh data</button>
+    <p id="debug-status" class="sub">Loading logged locations…</p>
+  </div>
+
+  <div id="debug-map"></div>
+
+  <div id="debug-summary" class="card"></div>
+  <div id="debug-legend" class="card debug-legend">
+    <span><i class="legend-line route"></i> route geometry</span>
+    <span><i class="legend-line points"></i> logged points</span>
+    <span><i class="legend-dot actual"></i> actual</span>
+    <span><i class="legend-dot estimated"></i> estimated</span>
+  </div>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="debug.js"></script>
+</body>
+</html>

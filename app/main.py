@@ -11,7 +11,7 @@ from .db import Database
 from .journey import JourneyManager
 from .stations import StationRegistry
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(name)s %(message)s")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 

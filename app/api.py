@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .models import Itinerary
@@ -142,3 +142,10 @@ async def points(request: Request):
     if not manager.active:
         raise HTTPException(404, "no active journey")
     return [p.model_dump() for p in manager.db.get_points(manager.active.id)]
+
+
+@router.get("/debug/locations")
+async def debug_locations(request: Request, limit: int = Query(20, ge=1, le=100)):
+    """Recent journeys with route geometry and logged points for map debugging."""
+    manager = request.app.state.manager
+    return {"journeys": manager.db.list_debug_journeys(limit)}

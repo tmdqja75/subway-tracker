@@ -84,6 +84,11 @@ class ActiveJourney:
         self.logged_idx = 0
         self.last_arrival_time = time.time()
         self.shape_idx = _station_shape_indices(self.leg)
+        log.debug(
+            "journey %s leg %s: line=%s stations=%d shape_pts=%d shape_idx=%s section_time=%s",
+            self.id, self.leg_idx, self.leg.line_key, len(self.leg.stations),
+            len(self.leg.shape or []), self.shape_idx, self.leg.section_time,
+        )
 
     @property
     def leg(self) -> SubwayLeg:
@@ -213,6 +218,10 @@ class JourneyManager:
             found = await self._realtime_update(j)
             if not found:
                 j.lost_polls += 1
+                log.debug(
+                    "journey %s: train %s not in position feed (lost_polls=%d/%d)",
+                    j.id, j.train_no, j.lost_polls, LOST_POLL_LIMIT,
+                )
                 if j.lost_polls >= LOST_POLL_LIMIT:
                     log.warning("train %s lost, falling back to timer", j.train_no)
                     j.tracking_mode = "timer"
@@ -231,16 +240,29 @@ class JourneyManager:
         positions = await fetch_positions(self.settings.seoul_api_key, j.leg.line_key)
         train = next((p for p in positions if p.get("trainNo") == j.train_no), None)
         if train is None:
+            log.debug(
+                "journey %s: train_no=%s not found among %d positions on line=%s (train_nos=%s)",
+                j.id, j.train_no, len(positions), j.leg.line_key,
+                [p.get("trainNo") for p in positions],
+            )
             return False
 
         names = [normalize_name(s.name) for s in j.leg.stations]
         statn = normalize_name(train.get("statnNm", ""))
         sttus = train.get("trainSttus", "")
         now = time.time()
+        log.debug(
+            "journey %s: train %s raw statnNm=%r -> normalized=%r sttus=%s",
+            j.id, j.train_no, train.get("statnNm", ""), statn, sttus,
+        )
 
         if statn not in names:
             # Train hasn't reached our boarding station yet (user waiting on the
             # platform) — or it already ran past the whole leg.
+            log.debug(
+                "journey %s: statn=%r not in leg station names=%s (anchor_idx=%s anchor_phase=%s)",
+                j.id, statn, names, j.anchor_idx, j.anchor_phase,
+            )
             if j.anchor_phase == "segment" and j.anchor_idx >= len(names) - 2:
                 await self._complete_leg(j)
                 return True
@@ -264,11 +286,19 @@ class JourneyManager:
         else:  # "3": running toward statn -> in segment before idx
             new_idx, new_phase, status = max(idx - 1, 0), "segment", "between"
             reached = idx - 1
+        log.debug(
+            "journey %s: idx=%d sttus=%s -> new_idx=%d new_phase=%s status=%s reached=%d logged_idx=%d",
+            j.id, idx, sttus, new_idx, new_phase, status, reached, j.logged_idx,
+        )
 
         if reached > j.logged_idx:
             self._log_segment(j, reached, now)
 
         if (new_idx, new_phase) != (j.anchor_idx, j.anchor_phase):
+            log.debug(
+                "journey %s: anchor %s/%s -> %s/%s",
+                j.id, j.anchor_idx, j.anchor_phase, new_idx, new_phase,
+            )
             j.anchor_idx, j.anchor_phase, j.anchor_time = new_idx, new_phase, now
 
         lat, lon, _ = self._interpolate(j, now)
@@ -279,6 +309,7 @@ class JourneyManager:
 
         arrived_at_end = idx >= len(names) - 1 and sttus in ("0", "1")
         if arrived_at_end:
+            log.debug("journey %s: reached end station idx=%d, completing leg", j.id, idx)
             await self._complete_leg(j)
         return True
 
@@ -287,11 +318,16 @@ class JourneyManager:
         leg's linestring geometry, with timestamps spread over the ride time."""
         to_idx = min(to_idx, len(j.leg.stations) - 1)
         if to_idx <= j.logged_idx:
+            log.debug(
+                "journey %s: _log_segment no-op, to_idx=%d <= logged_idx=%d",
+                j.id, to_idx, j.logged_idx,
+            )
             return
         if j.shape_idx:
             a, b = j.shape_idx[j.logged_idx], j.shape_idx[to_idx]
             pts = j.leg.shape[a : b + 1]
         else:  # no geometry from Tmap: fall back to straight station hops
+            a, b = None, None
             pts = [[s.lat, s.lon] for s in j.leg.stations[j.logged_idx : to_idx + 1]]
 
         start_t = j.last_arrival_time or now
@@ -302,6 +338,10 @@ class JourneyManager:
         if len(pts) > max_pts:
             step = (len(pts) - 1) / (max_pts - 1)
             pts = [pts[round(i * step)] for i in range(max_pts)]
+        log.debug(
+            "journey %s: _log_segment logged_idx=%d->to_idx=%d shape_range=%s..%s raw_pts=%d written_pts=%d span=%.1fs",
+            j.id, j.logged_idx, to_idx, a, b, len(pts), max(len(pts) - (1 if j.logged_idx > 0 else 0), 0), span,
+        )
 
         n = len(pts)
         for i, (lat, lon) in enumerate(pts):
@@ -321,6 +361,10 @@ class JourneyManager:
         seg_count = max(len(stations) - 1, 1)
         seg_time = max(j.leg.section_time / seg_count, 30) if j.leg.section_time else DEFAULT_SEGMENT_SECONDS
         f = min((now - j.anchor_time) / seg_time, MAX_SEGMENT_FRACTION)
+        log.debug(
+            "journey %s: interpolate anchor_idx=%d %s->%s seg_time=%.1fs elapsed=%.1fs f=%.3f",
+            j.id, j.anchor_idx, a.name, b.name, seg_time, now - j.anchor_time, f,
+        )
         return _lerp(a.lat, b.lat, f), _lerp(a.lon, b.lon, f), True
 
     async def _timer_update(self, j: ActiveJourney) -> None:
@@ -331,6 +375,10 @@ class JourneyManager:
         total = max(j.leg.section_time, 60)
         elapsed = now - (j.leg_started_at or now)
         progress = elapsed / total
+        log.debug(
+            "journey %s: timer_update elapsed=%.1fs total=%.1fs progress=%.3f",
+            j.id, elapsed, total, progress,
+        )
         if progress >= 1.0:
             last = stations[-1]
             j.last_status = TrainStatus(
