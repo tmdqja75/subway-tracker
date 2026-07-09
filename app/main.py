@@ -11,7 +11,19 @@ from .db import Database
 from .journey import JourneyManager
 from .stations import StationRegistry
 
-logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(name)s %(message)s")
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=get_settings().log_level,
+        format="%(asctime)s %(name)s %(message)s",
+    )
+    # httpx logs full request URLs at INFO, and the Seoul Open API key is part
+    # of the URL path. Keep application logs at LOG_LEVEL while preventing API
+    # keys from being shipped to Loki through dependency request logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+configure_logging()
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 

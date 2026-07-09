@@ -36,6 +36,39 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Open `http://<server>:8000` on your phone.
 
+## Docker + Grafana/Loki
+
+The app can also run as a Docker Compose stack with Loki log collection and a
+pre-provisioned Grafana Loki datasource.
+
+1. Copy `.env.example` to `.env` and fill in the API keys as described above.
+2. Start the stack:
+
+```bash
+docker compose up --build
+```
+
+Services:
+
+| Service | URL | Purpose |
+|---|---|---|
+| `app` | http://localhost:8000 | FastAPI app + static frontend |
+| `grafana` | http://localhost:3000 | Explore/query logs; default login is `admin` / `admin` unless overridden in `.env` |
+| `loki` | http://localhost:3100 | Loki log store API |
+| `promtail` | internal | Scrapes app logs and pushes them to Loki |
+
+The app container writes stdout/stderr to `/var/log/subway-tracker/app.log` via
+`tee`. Promtail reads that shared Docker volume and labels the stream with
+`{job="subway-tracker", service="app"}`. In Grafana, open **Explore**, select
+the `Loki` datasource, and query:
+
+```logql
+{job="subway-tracker", service="app"}
+```
+
+Runtime data is bind-mounted from `./data` to `/app/data`, so the SQLite DB and
+station CSV persist outside the container.
+
 ## How tracking works
 
 - You pick a train from the arrivals list at your boarding station; the server

@@ -1,0 +1,19 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: subway-tracker
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: subway-tracker
+          service: app
+          __path__: /var/log/subway-tracker/*.log
