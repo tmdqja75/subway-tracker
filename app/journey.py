@@ -24,7 +24,12 @@ from .stations import normalize_name
 
 log = logging.getLogger(__name__)
 
-LOST_POLL_LIMIT = 4  # consecutive polls without the train before timer fallback
+MIN_STATION_POLL_WINDOW_SECONDS = 15
+MAX_STATION_POLL_WINDOW_SECONDS = 60
+STATION_POLL_WINDOW_FRACTION = 0.4
+CRUISE_POLL_SECONDS = 30
+MISSING_TRAIN_RETRY_SECONDS = 10
+LOST_TRAIN_FALLBACK_SECONDS = 90
 MAX_SEGMENT_FRACTION = 0.92  # never claim arrival from interpolation alone
 DEFAULT_SEGMENT_SECONDS = 120
 
@@ -67,6 +72,8 @@ class ActiveJourney:
         self.anchor_phase = "station"
         self.anchor_time = 0.0
         self.lost_polls = 0
+        self.missing_since: float | None = None
+        self.next_seoul_poll_at = 0.0
         self.last_status: TrainStatus | None = None
         self.error: str | None = None
         self.transfer_started_at: float | None = None
@@ -82,6 +89,8 @@ class ActiveJourney:
         self.anchor_phase = "station"
         self.anchor_time = time.time()
         self.lost_polls = 0
+        self.missing_since = None
+        self.next_seoul_poll_at = 0.0
         self.logged_idx = 0
         self.last_arrival_time = time.time()
         self.shape_idx = _station_shape_indices(self.leg)
@@ -217,31 +226,105 @@ class JourneyManager:
         except asyncio.CancelledError:
             pass
 
+    def _next_poll_delay(self, j: ActiveJourney) -> float:
+        """Adaptive Seoul position polling interval.
+
+        Use POLL_INTERVAL_SECONDS as the fast cadence around station events,
+        but slow down while the train is cruising between stations because the
+        Seoul feed only reports coarse station-relative states.
+        """
+        fast = self.settings.poll_interval_seconds
+        if fast <= 0 or j.tracking_mode != "realtime":
+            return fast
+        if j.missing_since is not None:
+            return min(MISSING_TRAIN_RETRY_SECONDS, CRUISE_POLL_SECONDS)
+        if j.anchor_phase != "segment" or j.anchor_idx >= len(j.leg.stations) - 1:
+            return fast
+
+        elapsed = time.time() - j.anchor_time
+        segment_seconds = self._segment_seconds(j)
+        station_window = self._station_poll_window_seconds(segment_seconds)
+        remaining = segment_seconds - elapsed
+        if remaining <= station_window:
+            return fast
+        return min(CRUISE_POLL_SECONDS, max(fast, remaining - station_window))
+
+    def _segment_seconds(self, j: ActiveJourney) -> float:
+        seg_count = max(len(j.leg.stations) - 1, 1)
+        return max(j.leg.section_time / seg_count, 30) if j.leg.section_time else DEFAULT_SEGMENT_SECONDS
+
+    def _station_poll_window_seconds(self, segment_seconds: float) -> float:
+        return min(
+            MAX_STATION_POLL_WINDOW_SECONDS,
+            max(MIN_STATION_POLL_WINDOW_SECONDS, segment_seconds * STATION_POLL_WINDOW_FRACTION),
+        )
+
     async def _tick(self, j: ActiveJourney) -> None:
         if j.tracking_mode == "realtime":
+            now = time.time()
+            if j.next_seoul_poll_at and now < j.next_seoul_poll_at:
+                self._local_realtime_update(j, now)
+                return
             found = await self._realtime_update(j)
             if not found:
+                now = time.time()
                 j.lost_polls += 1
+                if j.missing_since is None:
+                    j.missing_since = now
+                missing_for = now - j.missing_since
                 log.debug(
-                    "journey %s: train %s not in position feed (lost_polls=%d/%d)",
-                    j.id, j.train_no, j.lost_polls, LOST_POLL_LIMIT,
+                    "journey %s: train %s not in position feed (lost_polls=%d missing_for=%.1fs/%.1fs)",
+                    j.id, j.train_no, j.lost_polls, missing_for, LOST_TRAIN_FALLBACK_SECONDS,
                 )
-                if j.lost_polls >= LOST_POLL_LIMIT:
+                if missing_for >= LOST_TRAIN_FALLBACK_SECONDS:
                     log.warning("train %s lost, falling back to timer", j.train_no)
                     j.tracking_mode = "timer"
+                    j.missing_since = None
                     self.db.update_journey(j.id, tracking_mode="timer")
             else:
                 j.lost_polls = 0
+                j.missing_since = None
+            if j.state == JourneyState.ON_TRAIN and j.tracking_mode == "realtime":
+                j.next_seoul_poll_at = time.time() + self._next_poll_delay(j)
         if j.state != JourneyState.ON_TRAIN:
             return  # leg completed inside the update
         if j.tracking_mode == "timer":
             await self._timer_update(j)
 
+    def _local_realtime_update(self, j: ActiveJourney, now: float) -> None:
+        """Refresh the displayed train position between Seoul API polls.
+
+        The frontend polls our local snapshot every few seconds. Keep that
+        local display moving via interpolation, but do not call Seoul until the
+        adaptive Seoul poll deadline is due.
+        """
+        if not j.last_status or j.anchor_phase != "segment":
+            return
+        lat, lon, _ = self._interpolate(j, now)
+        j.last_status = TrainStatus(
+            train_no=j.last_status.train_no,
+            station_name=j.last_status.station_name,
+            station_index=j.last_status.station_index,
+            status="between",
+            lat=lat,
+            lon=lon,
+            updated_at=int(now),
+        )
+
     async def _realtime_update(self, j: ActiveJourney) -> bool:
         """Poll the position API; write the travelled path on each station
         arrival; complete the leg at the end station.
         Returns False when the train number is absent from the feed."""
-        positions = await fetch_positions(self.settings.seoul_api_key, j.leg.line_key)
+        fallback_kwargs = (
+            {"fallback_api_key": self.settings.seoul_api_key_two}
+            if self.settings.seoul_api_key_two
+            else {}
+        )
+        positions = await fetch_positions(
+            self.settings.seoul_api_key,
+            j.leg.line_key,
+            **fallback_kwargs,
+        )
         train = next((p for p in positions if p.get("trainNo") == j.train_no), None)
         if train is None:
             log.debug(
@@ -392,8 +475,7 @@ class JourneyManager:
         if j.anchor_phase == "station" or j.anchor_idx >= len(stations) - 1:
             return a.lat, a.lon, False
         b = stations[j.anchor_idx + 1]
-        seg_count = max(len(stations) - 1, 1)
-        seg_time = max(j.leg.section_time / seg_count, 30) if j.leg.section_time else DEFAULT_SEGMENT_SECONDS
+        seg_time = self._segment_seconds(j)
         f = min((now - j.anchor_time) / seg_time, MAX_SEGMENT_FRACTION)
         log.debug(
             "journey %s: interpolate anchor_idx=%d %s->%s seg_time=%.1fs elapsed=%.1fs f=%.3f",

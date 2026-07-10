@@ -26,7 +26,8 @@ frontend served from the same app.
    and replace `data/stations.csv` (keep the header:
    `역사_ID,역사명,호선,위도,경도`, UTF-8).
 2. **Keys**: `cp .env.example .env` and fill in `TMAP_APP_KEY`,
-   `SEOUL_API_KEY`, `REITTI_URL`, `REITTI_TOKEN`.
+   `SEOUL_API_KEY`, optional fallback `SEOUL_API_KEY_TWO`, `REITTI_URL`,
+   `REITTI_TOKEN`.
 3. **Run**:
 
 ```bash
@@ -72,9 +73,16 @@ station CSV persist outside the container.
 ## How tracking works
 
 - You pick a train from the arrivals list at your boarding station; the server
-  then polls the position API every 15 s (`POLL_INTERVAL_SECONDS`) for that
-  train number and interpolates lat/lon between station coordinates by elapsed
-  time (interpolated points are marked lower-accuracy for Reitti).
+  then polls the Seoul position API for that train number and interpolates
+  lat/lon between station coordinates by elapsed time (interpolated points are
+  marked lower-accuracy for Reitti).
+- Realtime tracking uses adaptive polling: `POLL_INTERVAL_SECONDS` is the fast
+  cadence near station events (default 5 s), while cruising between stations
+  slows to about 30 s. The server starts polling fast again during the next
+  station's expected arrival window: 40% of the estimated station-to-station
+  time, capped between 15 s and 60 s. Missing trains are retried every 10 s, and
+  the server falls back to timer mode only after the train has been absent for
+  90 s.
 - Arrival at the leg's last station auto-advances to the next leg's train
   picker (transfer) or finishes the journey and pushes to Reitti.
 - Manual overrides: "지금 내렸어요" (force alight), "열차 잘못 탔어요" (back to

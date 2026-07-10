@@ -8,7 +8,7 @@ import pytest
 from app import journey as journey_mod
 from app.config import Settings
 from app.db import Database
-from app.journey import JourneyManager
+from app.journey import ActiveJourney, JourneyManager
 from app.models import Itinerary, JourneyState, LegStation, SubwayLeg
 
 
@@ -228,3 +228,129 @@ async def test_missed_train_returns_to_picker(manager, monkeypatch):
     await manager.missed_train()
     assert j.state == JourneyState.AWAITING_BOARD
     assert j.train_no is None
+
+
+def test_realtime_polling_slows_while_cruising_and_speeds_near_stations(manager, monkeypatch):
+    manager.settings.poll_interval_seconds = 5
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+
+    j = ActiveJourney(1, make_itinerary())
+    j.state = JourneyState.ON_TRAIN
+    j.train_no = "3001"
+    j.tracking_mode = "realtime"
+    j.prepare_leg()
+    j.anchor_idx = 0
+    j.anchor_phase = "segment"
+    j.anchor_time = 1_000_000.0
+
+    FakeTime._t = 1_000_030.0
+    assert manager._next_poll_delay(j) == 30
+
+    FakeTime._t = 1_000_070.0
+    assert manager._next_poll_delay(j) == 5
+
+
+def test_short_segments_do_not_spend_entire_segment_in_fast_poll_window(manager, monkeypatch):
+    manager.settings.poll_interval_seconds = 5
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+
+    itinerary = make_itinerary()
+    itinerary.legs[0].section_time = 80  # 40s per station hop
+    j = ActiveJourney(1, itinerary)
+    j.state = JourneyState.ON_TRAIN
+    j.train_no = "3001"
+    j.tracking_mode = "realtime"
+    j.prepare_leg()
+    j.anchor_idx = 0
+    j.anchor_phase = "segment"
+    j.anchor_time = 1_000_000.0
+
+    FakeTime._t = 1_000_010.0
+    assert manager._next_poll_delay(j) == 14
+
+    FakeTime._t = 1_000_025.0
+    assert manager._next_poll_delay(j) == 5
+
+
+async def test_realtime_tick_skips_seoul_fetch_until_next_poll_deadline(manager, monkeypatch):
+    manager.settings.poll_interval_seconds = 5
+    calls = []
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    async def fake_positions(key, line):
+        calls.append(FakeTime._t)
+        return [{"trainNo": "3001", "statnNm": "양재", "trainSttus": "2"}]
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+
+    j = ActiveJourney(1, make_itinerary())
+    j.state = JourneyState.ON_TRAIN
+    j.train_no = "3001"
+    j.tracking_mode = "realtime"
+    j.prepare_leg()
+
+    await manager._tick(j)
+    assert calls == [1_000_000.0]
+
+    FakeTime._t = 1_000_005.0
+    await manager._tick(j)
+    assert calls == [1_000_000.0]
+
+    FakeTime._t = 1_000_030.0
+    await manager._tick(j)
+    assert calls == [1_000_000.0, 1_000_030.0]
+
+
+async def test_missing_train_fallback_is_based_on_elapsed_time(manager, monkeypatch):
+    manager.settings.poll_interval_seconds = 5
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    async def fake_positions(key, line):
+        return []
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+
+    j = ActiveJourney(1, make_itinerary())
+    j.state = JourneyState.ON_TRAIN
+    j.train_no = "9999"
+    j.tracking_mode = "realtime"
+    j.prepare_leg()
+
+    for elapsed in (0, 5, 10, 15):
+        FakeTime._t = 1_000_000.0 + elapsed
+        await manager._tick(j)
+        assert j.tracking_mode == "realtime"
+
+    FakeTime._t = 1_000_091.0
+    await manager._tick(j)
+    assert j.tracking_mode == "timer"

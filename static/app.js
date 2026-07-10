@@ -67,8 +67,9 @@ function wireAutocomplete(inputId, listId) {
           const li = document.createElement("li");
           li.innerHTML = `${s.name}<span>${s.line}</span>`;
           li.onclick = () => {
-            input.value = s.name;
+            input.value = `${s.name} (${s.line})`;
             input.dataset.stationId = s.station_id;
+            input.dataset.stationName = s.name;
             list.innerHTML = "";
           };
           list.appendChild(li);
@@ -77,7 +78,10 @@ function wireAutocomplete(inputId, listId) {
     }, 250);
   });
   // typing again invalidates the previous pick
-  input.addEventListener("input", () => { delete input.dataset.stationId; });
+  input.addEventListener("input", () => {
+    delete input.dataset.stationId;
+    delete input.dataset.stationName;
+  });
 }
 
 wireAutocomplete("start-input", "start-suggest");
@@ -85,8 +89,8 @@ wireAutocomplete("end-input", "end-suggest");
 
 $("search-btn").onclick = async () => {
   $("search-error").textContent = "";
-  const start = $("start-input").value.trim();
-  const end = $("end-input").value.trim();
+  const start = $("start-input").dataset.stationName || $("start-input").value.trim();
+  const end = $("end-input").dataset.stationName || $("end-input").value.trim();
   if (!start || !end) { $("search-error").textContent = "출발역과 도착역을 입력하세요"; return; }
   $("search-btn").disabled = true;
   try {

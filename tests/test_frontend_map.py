@@ -148,11 +148,102 @@ process.stdout.write(JSON.stringify({
 }));
 """
 
+AUTOCOMPLETE_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+const scriptPath = process.argv[1];
+const code = fs.readFileSync(scriptPath, "utf8");
+const elements = {};
+let pendingTimer = null;
+
+function makeElement(id) {
+  return {
+    id,
+    dataset: {},
+    textContent: "",
+    innerHTML: "",
+    disabled: false,
+    value: "",
+    children: [],
+    listeners: {},
+    classList: {
+      toggle() {},
+      add() {},
+      remove() {},
+    },
+    addEventListener(type, fn) {
+      this.listeners[type] = this.listeners[type] || [];
+      this.listeners[type].push(fn);
+    },
+    appendChild(child) { this.children.push(child); },
+  };
+}
+
+const context = {
+  console,
+  location: { protocol: "http:", origin: "http://localhost:8000" },
+  alert() {},
+  confirm() { return true; },
+  setInterval() { return 1; },
+  clearInterval() {},
+  setTimeout(fn) { pendingTimer = fn; return 1; },
+  clearTimeout() {},
+  fetch: async (url) => ({
+    ok: true,
+    json: async () => url.includes("/api/stations/search") ? [
+      { station_id: "gangnam-2", name: "강남", line: "2호선", lat: 37.4980, lon: 127.0277 },
+    ] : { state: "idle" },
+  }),
+  document: {
+    getElementById(id) {
+      if (!elements[id]) elements[id] = makeElement(id);
+      return elements[id];
+    },
+    addEventListener() {},
+    createElement(tag) { return makeElement(tag); },
+  },
+  L: {
+    map() { return {}; },
+    tileLayer() { return { addTo() { return this; } }; },
+  },
+};
+context.window = context;
+vm.createContext(context);
+vm.runInContext(code, context, { filename: scriptPath });
+
+(async () => {
+  const input = elements["start-input"];
+  input.value = "강";
+  input.listeners.input.forEach((fn) => fn());
+  await pendingTimer();
+  elements["start-suggest"].children[0].onclick();
+
+  process.stdout.write(JSON.stringify({
+    value: input.value,
+    stationId: input.dataset.stationId,
+  }));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+
 
 def run_frontend_harness() -> dict:
     script = Path("static/app.js")
     completed = subprocess.run(
         ["node", "-e", FRONTEND_HARNESS, str(script)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(completed.stdout)
+
+def run_autocomplete_harness() -> dict:
+    script = Path("static/app.js")
+    completed = subprocess.run(
+        ["node", "-e", AUTOCOMPLETE_HARNESS, str(script)],
         check=True,
         text=True,
         capture_output=True,
@@ -170,6 +261,13 @@ def test_selected_subway_position_uses_emoji_marker_for_approaching_and_boarded_
     assert "열차 2001" in result["tooltip"]
     assert "이동 중" in result["tooltip"]
     assert "열차 2001 · 역삼 이동 중" in result["statusText"]
+
+
+def test_selected_station_displays_chosen_line_after_autocomplete_pick():
+    result = run_autocomplete_harness()
+
+    assert result["value"] == "강남 (2호선)"
+    assert result["stationId"] == "gangnam-2"
 
 
 def test_frontend_static_assets_are_cache_busted():

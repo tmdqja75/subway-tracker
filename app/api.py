@@ -96,9 +96,18 @@ async def arrivals(request: Request):
     if not leg.line_key:
         return {"covered": False, "trains": []}
     upcoming = [s.name for s in leg.stations[1:]]
+    fallback_kwargs = (
+        {"fallback_api_key": settings.seoul_api_key_two}
+        if settings.seoul_api_key_two
+        else {}
+    )
     try:
         trains = await fetch_arrivals(
-            settings.seoul_api_key, leg.start_name, leg.line_key, upcoming
+            settings.seoul_api_key,
+            leg.start_name,
+            leg.line_key,
+            upcoming,
+            **fallback_kwargs,
         )
     except SeoulApiError as e:
         raise HTTPException(502, str(e))

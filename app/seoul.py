@@ -18,9 +18,36 @@ log = logging.getLogger(__name__)
 
 BASE = "http://swopenapi.seoul.go.kr/api/subway"
 
+RATE_LIMIT_CODES = {"ERROR-337", "HTTP-429"}
+
 
 class SeoulApiError(Exception):
-    pass
+    def __init__(self, code: str = "", message: str = ""):
+        self.code = code
+        self.message = message
+        super().__init__(f"Seoul API {code}: {message}" if code else message)
+
+
+def _api_keys(api_key: str, fallback_api_key: str = "") -> list[str]:
+    keys = []
+    if api_key:
+        keys.append(api_key)
+    if fallback_api_key and fallback_api_key not in keys:
+        keys.append(fallback_api_key)
+    return keys or [api_key]
+
+
+def _is_rate_limit_error(error: SeoulApiError) -> bool:
+    return error.code in RATE_LIMIT_CODES or "호출건수" in error.message
+
+
+def _has_fallback(keys: list[str], idx: int) -> bool:
+    return idx < len(keys) - 1
+
+
+def _log_seoul_request(endpoint: str, **fields: str) -> None:
+    suffix = " ".join(f"{key}={value}" for key, value in fields.items())
+    log.info("seoul api request endpoint=%s %s", endpoint, suffix)
 
 
 def _check(data: dict, context: str) -> None:
@@ -43,35 +70,77 @@ def _check(data: dict, context: str) -> None:
         # "no location logged" (e.g. line temporarily has zero running trains)
         log.debug("%s: no data (INFO-200)", context)
         return
-    log.warning("%s: Seoul API error %s: %s", context, code, err.get("message", ""))
-    raise SeoulApiError(f"Seoul API {code}: {err.get('message', '')}")
+    message = err.get("message", "")
+    log.warning("%s: Seoul API error %s: %s", context, code, message)
+    raise SeoulApiError(code, message)
 
 
-async def fetch_positions(api_key: str, line_key: str) -> list[dict]:
-    """All trains currently running on a line. Raw dicts from the API."""
-    url = f"{BASE}/{api_key}/json/realtimePosition/0/200/{line_key}"
-    t0 = time.monotonic()
+async def _fetch_json_with_key_rotation(
+    api_key: str,
+    fallback_api_key: str,
+    endpoint: str,
+    path: str,
+    context: str,
+    log_fields: dict[str, str],
+) -> dict:
+    keys = _api_keys(api_key, fallback_api_key)
     async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            resp = await client.get(url)
-        except httpx.RequestError as e:
-            log.warning(
-                "fetch_positions line=%s request failed after %.2fs: %s",
-                line_key, time.monotonic() - t0, e,
-            )
-            raise
-    elapsed = time.monotonic() - t0
-    log.debug("fetch_positions line=%s status=%s elapsed=%.2fs", line_key, resp.status_code, elapsed)
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        log.warning(
-            "fetch_positions line=%s http error status=%s body=%s",
-            line_key, resp.status_code, resp.text[:300],
-        )
-        raise
-    data = resp.json()
-    _check(data, f"fetch_positions line={line_key}")
+        for idx, key in enumerate(keys):
+            url = f"{BASE}/{key}/json/{path}"
+            t0 = time.monotonic()
+            _log_seoul_request(endpoint, **log_fields)
+            try:
+                resp = await client.get(url)
+            except httpx.RequestError as e:
+                log.warning(
+                    "%s request failed after %.2fs: %s",
+                    context,
+                    time.monotonic() - t0,
+                    e,
+                )
+                raise
+            elapsed = time.monotonic() - t0
+            log.debug("%s status=%s elapsed=%.2fs", context, resp.status_code, elapsed)
+            if resp.status_code == 429 and _has_fallback(keys, idx):
+                log.warning("%s: Seoul API key rate limited (HTTP 429), retrying with fallback key", context)
+                continue
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError:
+                log.warning(
+                    "%s http error status=%s body=%s",
+                    context,
+                    resp.status_code,
+                    resp.text[:300],
+                )
+                raise
+            data = resp.json()
+            try:
+                _check(data, context)
+            except SeoulApiError as e:
+                if _is_rate_limit_error(e) and _has_fallback(keys, idx):
+                    log.warning(
+                        "%s: Seoul API key rate limited (%s), retrying with fallback key",
+                        context,
+                        e.code,
+                    )
+                    continue
+                raise
+            return data
+    raise SeoulApiError("HTTP-429", "all configured Seoul API keys were rate limited")
+
+
+async def fetch_positions(api_key: str, line_key: str, fallback_api_key: str = "") -> list[dict]:
+    """All trains currently running on a line. Raw dicts from the API."""
+    context = f"fetch_positions line={line_key}"
+    data = await _fetch_json_with_key_rotation(
+        api_key,
+        fallback_api_key,
+        "realtimePosition",
+        f"realtimePosition/0/200/{line_key}",
+        context,
+        {"line": line_key},
+    )
     trains = data.get("realtimePositionList") or []
     log.debug(
         "fetch_positions line=%s trains=%d train_nos=%s",
@@ -86,6 +155,8 @@ async def fetch_arrivals(
     line_key: str,
     upcoming_stations: list[str],
     limit: int = 3,
+    *,
+    fallback_api_key: str = "",
 ) -> list[ArrivingTrain]:
     """Trains approaching a station on a given line, closest first.
 
@@ -94,29 +165,15 @@ async def fetch_arrivals(
     to pass through, the train is headed our way.
     """
     query_name = normalize_name(station_name)
-    url = f"{BASE}/{api_key}/json/realtimeStationArrival/0/30/{query_name}"
-    t0 = time.monotonic()
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            resp = await client.get(url)
-        except httpx.RequestError as e:
-            log.warning(
-                "fetch_arrivals station=%s request failed after %.2fs: %s",
-                query_name, time.monotonic() - t0, e,
-            )
-            raise
-    elapsed = time.monotonic() - t0
-    log.debug("fetch_arrivals station=%s status=%s elapsed=%.2fs", query_name, resp.status_code, elapsed)
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        log.warning(
-            "fetch_arrivals station=%s http error status=%s body=%s",
-            query_name, resp.status_code, resp.text[:300],
-        )
-        raise
-    data = resp.json()
-    _check(data, f"fetch_arrivals station={query_name}")
+    context = f"fetch_arrivals station={query_name}"
+    data = await _fetch_json_with_key_rotation(
+        api_key,
+        fallback_api_key,
+        "realtimeStationArrival",
+        f"realtimeStationArrival/0/30/{query_name}",
+        context,
+        {"station": query_name, "line": line_key},
+    )
 
     subway_id = LINE_TO_SUBWAY_ID.get(line_key)
     upcoming = {normalize_name(n) for n in upcoming_stations}

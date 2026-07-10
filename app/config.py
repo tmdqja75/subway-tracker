@@ -11,10 +11,11 @@ class Settings(BaseSettings):
 
     tmap_app_key: str = ""
     seoul_api_key: str = ""
+    seoul_api_key_two: str = ""
     reitti_url: str = ""
     reitti_token: str = ""
 
-    poll_interval_seconds: int = 15
+    poll_interval_seconds: int = 5
     log_level: str = "INFO"
     stations_csv: Path = BASE_DIR / "data" / "stations.csv"
     db_path: Path = BASE_DIR / "data" / "tracker.db"
