@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 let debugMap;
 let journeys = [];
 let layers = [];
+let pointMarkers = [];
 
 function ensureDebugMap() {
   if (debugMap) return;
@@ -16,6 +17,7 @@ function ensureDebugMap() {
 function clearLayers() {
   layers.forEach((layer) => layer.remove());
   layers = [];
+  pointMarkers = [];
 }
 
 function addLayer(layer) {
@@ -55,6 +57,7 @@ function renderJourney(journey) {
   if (!journey) {
     $("debug-summary").innerHTML = "No journeys found in tracker.db.";
     $("debug-status").textContent = "No location data available.";
+    $("debug-timeline").innerHTML = "";
     debugMap.setView([37.5665, 126.9780], 11);
     return;
   }
@@ -108,8 +111,11 @@ function renderJourney(journey) {
       ${point.lat.toFixed(6)}, ${point.lon.toFixed(6)}
     `);
     addLayer(marker);
+    pointMarkers.push(marker);
     bounds.push([point.lat, point.lon]);
   });
+
+  renderTimeline(journey);
 
   if (bounds.length) {
     debugMap.fitBounds(bounds, { padding: [30, 30] });
@@ -126,6 +132,48 @@ function renderJourney(journey) {
     <p class="sub">${journey.points.length} logged points${firstPoint ? ` · ${formatDate(firstPoint.ts)} → ${formatDate(lastPoint.ts)}` : ""}</p>
   `;
   $("debug-status").textContent = `Loaded ${journeys.length} journey(s) from tracker.db.`;
+}
+
+function renderTimeline(journey) {
+  const el = $("debug-timeline");
+  const points = journey.points;
+  if (!points.length) {
+    el.innerHTML = "<p class=\"sub\">No logged points.</p>";
+    return;
+  }
+
+  const minTs = points[0].ts;
+  const maxTs = points[points.length - 1].ts;
+  const span = maxTs - minTs || 1;
+
+  const dots = points.map((point, index) => {
+    const pct = ((point.ts - minTs) / span) * 100;
+    const cls = point.estimated ? "estimated" : "actual";
+    return `<div class="timeline-dot ${cls}" style="left:${pct}%"
+      title="${point.estimated ? "Estimated" : "Actual"} · ${formatDate(point.ts)}"
+      data-index="${index}"></div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="timeline-track">
+      <div class="timeline-line"></div>
+      ${dots}
+    </div>
+    <div class="timeline-labels">
+      <span>${formatDate(minTs)}</span>
+      <span>${formatDate(maxTs)}</span>
+    </div>
+  `;
+
+  el.querySelectorAll(".timeline-dot").forEach((dot) => {
+    dot.addEventListener("click", () => {
+      const index = Number(dot.dataset.index);
+      const marker = pointMarkers[index];
+      if (!marker) return;
+      debugMap.panTo(marker.getLatLng());
+      marker.openPopup();
+    });
+  });
 }
 
 async function loadDebugLocations() {

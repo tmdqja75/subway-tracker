@@ -13,6 +13,7 @@ Tracking modes:
 
 import asyncio
 import logging
+import math
 import time
 
 from .config import Settings
@@ -36,6 +37,31 @@ DEFAULT_SEGMENT_SECONDS = 120
 
 def _lerp(a: float, b: float, f: float) -> float:
     return a + (b - a) * f
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def _distance_fractions(pts: list[list[float]]) -> list[float]:
+    """Cumulative distance along pts as a 0..1 fraction per point, so
+    timestamps can be spread by how far along the shape each point sits
+    rather than by its raw index (Tmap shape vertices aren't evenly spaced)."""
+    n = len(pts)
+    if n <= 1:
+        return [0.0] * n
+    cum = [0.0]
+    for i in range(1, n):
+        cum.append(cum[-1] + _haversine_m(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]))
+    total = cum[-1]
+    if total <= 0:
+        return [i / (n - 1) for i in range(n)]
+    return [d / total for d in cum]
 
 
 def _station_shape_indices(leg: SubwayLeg) -> list[int]:
@@ -431,10 +457,11 @@ class JourneyManager:
         )
 
         n = len(pts)
+        fractions = _distance_fractions(pts)
         for i, (lat, lon) in enumerate(pts):
             if i == 0 and j.logged_idx > 0:
                 continue  # departure point was already written as the previous arrival
-            ts = int(start_t + span * (i / (n - 1))) if n > 1 else int(now)
+            ts = int(start_t + span * fractions[i])
             self._emit_at(j, lat, lon, ts, estimated=i < n - 1)
         j.logged_idx = to_idx
         j.last_arrival_time = now
@@ -462,11 +489,11 @@ class JourneyManager:
             "journey %s: transfer walk after leg %d raw_pts=%d written_pts=%d span=%.1fs",
             j.id, prev_leg_idx, len(prev_leg.transfer_walk_shape), max(len(pts) - 1, 0), span,
         )
-        n = len(pts)
+        fractions = _distance_fractions(pts)
         for i, (lat, lon) in enumerate(pts):
             if i == 0:
                 continue  # alight point was already written as the previous leg end
-            ts = int(start_t + span * (i / (n - 1))) if n > 1 else int(now)
+            ts = int(start_t + span * fractions[i])
             self._emit_at(j, lat, lon, ts, estimated=True, leg_idx=prev_leg_idx)
 
     def _interpolate(self, j: ActiveJourney, now: float) -> tuple[float, float, bool]:
