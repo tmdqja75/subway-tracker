@@ -37,6 +37,21 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 Open `http://<server>:8000` on your phone.
 
+### Tests
+
+```bash
+uv run pytest
+```
+
+Outbound HTTP (Tmap/Seoul/Reitti) is mocked with `respx`; no real network or
+keys needed to run tests.
+
+## Debug view
+
+`http://<server>:8000/debug.html` lists recent journeys with route geometry,
+logged points on a Leaflet map, and a horizontal timeline — useful for
+checking interpolation/logging behavior without re-riding a train.
+
 ## Docker + Grafana/Loki
 
 The app can also run as a Docker Compose stack with Loki log collection and a
@@ -101,3 +116,8 @@ station CSV persist outside the container.
 - The realtime position feed identifies trains by `trainNo`; numbers can
   change at line boundaries (through-running trains) — tracking then falls
   back to timer mode.
+
+## For coding agents
+
+See [AGENTS.md](AGENTS.md) for architecture, the journey state machine, and
+known gotchas before making changes.
