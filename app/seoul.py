@@ -6,6 +6,7 @@ Same API key works for both. Arrival btrainNo matches position trainNo.
 """
 
 import logging
+import re
 import time
 
 import httpx
@@ -17,6 +18,13 @@ from .stations import normalize_name
 log = logging.getLogger(__name__)
 
 BASE = "http://swopenapi.seoul.go.kr/api/subway"
+
+# Seoul's arvlCd: 0=진입/1=도착/2=출발 at the queried station, 3/4/5=전역출발/진입/도착
+# (one station before it). Anything else (99 = "운행중") gives no fixed-distance
+# code — arvlMsg2 sometimes carries "[N]번째 전역" instead, which we parse directly.
+ARVL_CD_HERE = {"0", "1", "2"}
+ARVL_CD_ONE_AWAY = {"3", "4", "5"}
+BRACKET_COUNT = re.compile(r"\[(\d+)\]")
 
 RATE_LIMIT_CODES = {"ERROR-337", "HTTP-429"}
 
@@ -157,12 +165,19 @@ async def fetch_arrivals(
     limit: int = 3,
     *,
     fallback_api_key: str = "",
+    avg_seconds_per_station: float | None = None,
 ) -> list[ArrivingTrain]:
     """Trains approaching a station on a given line, closest first.
 
     Direction matching: the arrival API labels trains "성수행 - 구의방면";
     if the 방면 (or terminus) station appears among the stations we are about
     to pass through, the train is headed our way.
+
+    Seoul's own distance signal (arvlCd / the "[N]번째 전역" text in arvlMsg2)
+    is used when present. Some lines only ever report a countdown in seconds
+    (barvlDt) with no station count at all -- for those, `avg_seconds_per_station`
+    (typically this leg's own scheduled time-per-station) is used to derive an
+    estimated count instead, so the UI never has to fall back to showing a time.
     """
     query_name = normalize_name(station_name)
     context = f"fetch_arrivals station={query_name}"
@@ -195,6 +210,22 @@ async def fetch_arrivals(
             eta = int(a.get("barvlDt", 0))
         except ValueError:
             eta = 0
+        arrival_msg = a.get("arvlMsg2", "")
+        arvl_cd = a.get("arvlCd", "")
+        stations_away: int | None
+        estimated = False
+        if arvl_cd in ARVL_CD_HERE:
+            stations_away = 0
+        elif arvl_cd in ARVL_CD_ONE_AWAY:
+            stations_away = 1
+        elif (m := BRACKET_COUNT.search(arrival_msg)):
+            stations_away = int(m.group(1))
+        elif eta > 0 and avg_seconds_per_station:
+            stations_away = max(1, round(eta / avg_seconds_per_station))
+            estimated = True
+        else:
+            stations_away = None
+            estimated = True
         trains.append(
             ArrivingTrain(
                 train_no=a.get("btrainNo", ""),
@@ -202,13 +233,19 @@ async def fetch_arrivals(
                 terminus=terminus,
                 direction_label=direction_label,
                 eta_seconds=eta,
-                arrival_msg=a.get("arvlMsg2", ""),
+                arrival_msg=arrival_msg,
+                stations_away=stations_away,
+                stations_away_estimated=estimated,
                 matches_direction=matches,
                 is_express=a.get("btrainSttus", "") == "급행",
             )
         )
-    # matching direction first, then soonest
-    trains.sort(key=lambda t: (not t.matches_direction, t.eta_seconds))
+    # matching direction first, then fewest stations away, then soonest
+    trains.sort(key=lambda t: (
+        not t.matches_direction,
+        t.stations_away if t.stations_away is not None else 999,
+        t.eta_seconds,
+    ))
     matching = [t for t in trains if t.matches_direction][:limit]
     log.debug(
         "fetch_arrivals station=%s total=%d matching_direction=%d upcoming=%s",

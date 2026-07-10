@@ -161,14 +161,15 @@ async function loadArrivals(snap) {
     data.trains.forEach((t) => {
       const div = document.createElement("div");
       div.className = "card train-card" + (t.matches_direction ? "" : " dim");
-      const eta = t.eta_seconds > 0
-        ? `${Math.max(1, Math.round(t.eta_seconds / 60))}분`
-        : (t.arrival_msg || "곧 도착");
+      let stationsAway;
+      if (t.stations_away === 0) stationsAway = "진입";
+      else if (t.stations_away === 1) stationsAway = "1정거장 전";
+      else if (t.stations_away != null) stationsAway = `${t.stations_away_estimated ? "약 " : ""}${t.stations_away}정거장 전`;
+      else stationsAway = t.arrival_msg || "정보 없음";
       div.innerHTML = `
         <div><span class="no">${t.train_no}편성</span>${t.is_express ? '<span class="badge">급행</span>' : ""}
-        ${t.matches_direction ? "" : '<span class="badge">방향 확인</span>'}<span class="eta">${eta}</span></div>
-        <div class="dir">${t.direction_label} · ${t.terminus}행</div>
-        <div class="dir">${t.arrival_msg}</div>`;
+        ${t.matches_direction ? "" : '<span class="badge">방향 확인</span>'}<span class="eta">${stationsAway}</span></div>
+        <div class="dir">${t.direction_label} · ${t.terminus}행</div>`;
       div.onclick = () => boardTrain(t.train_no);
       list.appendChild(div);
     });

@@ -106,6 +106,9 @@ async def arrivals(request: Request):
         if settings.seoul_api_key_two
         else {}
     )
+    stops = len(leg.stations) - 1
+    if stops > 0:
+        fallback_kwargs["avg_seconds_per_station"] = leg.section_time / stops
     try:
         trains = await fetch_arrivals(
             settings.seoul_api_key,
