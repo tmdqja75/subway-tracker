@@ -229,6 +229,191 @@ vm.runInContext(code, context, { filename: scriptPath });
 });
 """
 
+TRAIN_PICKER_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+const scriptPath = process.argv[1];
+const code = fs.readFileSync(scriptPath, "utf8");
+const elements = {};
+
+function makeElement(id) {
+  return {
+    id,
+    dataset: {},
+    textContent: "",
+    innerHTML: "",
+    disabled: false,
+    value: "",
+    children: [],
+    className: "",
+    onclick: null,
+    classList: {
+      toggle() {},
+      add() {},
+      remove() {},
+    },
+    addEventListener() {},
+    appendChild(child) { this.children.push(child); },
+  };
+}
+
+const context = {
+  console,
+  location: { protocol: "http:", origin: "http://localhost:8000" },
+  alert() {},
+  confirm() { return true; },
+  setInterval() { return 1; },
+  clearInterval() {},
+  fetch: async (url) => ({
+    ok: true,
+    json: async () => url.includes("/api/journeys/current/arrivals") ? {
+      covered: true,
+      trains: [
+        {
+          train_no: "2001",
+          line_name: "2호선",
+          terminus: "성수",
+          direction_label: "성수행 - 역삼방면",
+          eta_seconds: 0,
+          arrival_msg: "전역 도착",
+          matches_direction: true,
+          is_express: false,
+        },
+        {
+          train_no: "2002",
+          line_name: "2호선",
+          terminus: "성수",
+          direction_label: "성수행 - 역삼방면",
+          eta_seconds: 0,
+          arrival_msg: "3번째 전역",
+          matches_direction: true,
+          is_express: false,
+        },
+      ],
+    } : { state: "idle" },
+  }),
+  document: {
+    getElementById(id) {
+      if (!elements[id]) elements[id] = makeElement(id);
+      return elements[id];
+    },
+    addEventListener() {},
+    createElement(tag) { return makeElement(tag); },
+  },
+  L: {
+    map() { return {}; },
+    tileLayer() { return { addTo() { return this; } }; },
+  },
+};
+context.window = context;
+vm.createContext(context);
+vm.runInContext(code, context, { filename: scriptPath });
+
+(async () => {
+  await context.loadArrivals({
+    leg_idx: 0,
+    leg_count: 1,
+    leg: {
+      covered: true,
+      route: "수도권2호선",
+      start: "강남",
+      end: "사당",
+    },
+  });
+
+  process.stdout.write(JSON.stringify({
+    cards: elements["train-list"].children.map((child) => child.innerHTML),
+  }));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+
+ROUTE_PICKER_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+
+const scriptPath = process.argv[1];
+const code = fs.readFileSync(scriptPath, "utf8");
+const elements = {};
+const journeyBodies = [];
+
+function makeElement(id) {
+  return {
+    id,
+    dataset: {},
+    textContent: "",
+    innerHTML: "",
+    disabled: false,
+    value: "",
+    children: [],
+    className: "",
+    onclick: null,
+    classList: {
+      toggle() {},
+      add() {},
+      remove() {},
+    },
+    addEventListener() {},
+    appendChild(child) { this.children.push(child); },
+  };
+}
+
+const context = {
+  console,
+  location: { protocol: "http:", origin: "http://localhost:8000" },
+  alert() {},
+  confirm() { return true; },
+  setInterval() { return 1; },
+  clearInterval() {},
+  fetch: async (url, opts = {}) => {
+    if (url === "/api/journeys") journeyBodies.push(JSON.parse(opts.body));
+    return { ok: true, json: async () => ({ state: "idle" }) };
+  },
+  document: {
+    getElementById(id) {
+      if (!elements[id]) elements[id] = makeElement(id);
+      return elements[id];
+    },
+    addEventListener() {},
+    createElement(tag) { return makeElement(tag); },
+  },
+  L: {
+    map() { return {}; },
+    tileLayer() { return { addTo() { return this; } }; },
+  },
+};
+context.window = context;
+vm.createContext(context);
+vm.runInContext(code, context, { filename: scriptPath });
+
+(async () => {
+  const routeOptions = Array.from({ length: 5 }, (_, i) => ({
+    total_time: 600 + i * 60,
+    transfer_count: i % 2,
+    total_walk_time: 60,
+    fare: 1400,
+    legs: [{ route: `route-${i}`, line_key: i === 4 ? null : "2호선" }],
+    summary: [`route summary ${i}`],
+  }));
+  vm.runInContext(`
+    itineraries = ${JSON.stringify(routeOptions).replace(/</g, "\\u003c")};
+    renderRoutes();
+  `, context);
+  await elements["route-list"].children[4].onclick();
+
+  process.stdout.write(JSON.stringify({
+    cardCount: elements["route-list"].children.length,
+    selectedSummary: journeyBodies[0].itinerary.summary,
+  }));
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"""
+
 
 def run_frontend_harness() -> dict:
     script = Path("static/app.js")
@@ -244,6 +429,28 @@ def run_autocomplete_harness() -> dict:
     script = Path("static/app.js")
     completed = subprocess.run(
         ["node", "-e", AUTOCOMPLETE_HARNESS, str(script)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def run_train_picker_harness() -> dict:
+    script = Path("static/app.js")
+    completed = subprocess.run(
+        ["node", "-e", TRAIN_PICKER_HARNESS, str(script)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def run_route_picker_harness() -> dict:
+    script = Path("static/app.js")
+    completed = subprocess.run(
+        ["node", "-e", ROUTE_PICKER_HARNESS, str(script)],
         check=True,
         text=True,
         capture_output=True,
@@ -268,6 +475,23 @@ def test_selected_station_displays_chosen_line_after_autocomplete_pick():
 
     assert result["value"] == "강남 (2호선)"
     assert result["stationId"] == "gangnam-2"
+
+
+def test_train_picker_uses_actual_location_when_eta_is_zero():
+    result = run_train_picker_harness()
+
+    assert len(result["cards"]) == 2
+    assert "곧 도착" not in result["cards"][0]
+    assert "곧 도착" not in result["cards"][1]
+    assert '<span class="eta">전역 도착</span>' in result["cards"][0]
+    assert '<span class="eta">3번째 전역</span>' in result["cards"][1]
+
+
+def test_route_picker_renders_and_selects_every_api_route_option():
+    result = run_route_picker_harness()
+
+    assert result["cardCount"] == 5
+    assert result["selectedSummary"] == ["route summary 4"]
 
 
 def test_frontend_static_assets_are_cache_busted():

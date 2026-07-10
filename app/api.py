@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from .models import Itinerary
 from .seoul import SeoulApiError, fetch_arrivals
 from .stations import normalize_name
-from .tmap import TmapError, search_routes
+from .tmap import TmapError, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -60,14 +60,19 @@ async def routes(request: Request, body: RouteSearchRequest):
         )
         return [it.model_dump() for it in cached]
     try:
-        itineraries = await search_routes(
+        route_search = await search_routes_with_raw_response(
             settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
         )
     except TmapError as e:
         raise HTTPException(502, str(e))
+    itineraries = route_search.itineraries
     if not itineraries:
         raise HTTPException(404, "no subway routes found")
-    db.cache_route_options(*cache_key, itineraries)
+    db.cache_route_options(
+        *cache_key,
+        itineraries,
+        raw_tmap_response=route_search.raw_response_json,
+    )
     return [it.model_dump() for it in itineraries]
 
 

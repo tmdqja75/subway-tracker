@@ -161,7 +161,9 @@ async function loadArrivals(snap) {
     data.trains.forEach((t) => {
       const div = document.createElement("div");
       div.className = "card train-card" + (t.matches_direction ? "" : " dim");
-      const eta = t.eta_seconds > 0 ? `${Math.max(1, Math.round(t.eta_seconds / 60))}분` : "곧 도착";
+      const eta = t.eta_seconds > 0
+        ? `${Math.max(1, Math.round(t.eta_seconds / 60))}분`
+        : (t.arrival_msg || "곧 도착");
       div.innerHTML = `
         <div><span class="no">${t.train_no}편성</span>${t.is_express ? '<span class="badge">급행</span>' : ""}
         ${t.matches_direction ? "" : '<span class="badge">방향 확인</span>'}<span class="eta">${eta}</span></div>

@@ -1,3 +1,4 @@
+import sqlite3
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -7,6 +8,7 @@ from app.api import router
 from app.db import Database
 from app.models import Itinerary, LegStation, Station, SubwayLeg
 from app.stations import StationRegistry
+from app.tmap import TmapRouteSearchResult
 
 
 def make_itinerary(route: str = "수도권2호선") -> Itinerary:
@@ -54,11 +56,14 @@ def test_routes_reuses_cache_for_same_station_names_and_lines(tmp_path, monkeypa
     app = make_app(db)
     calls = []
 
-    async def fake_search_routes(app_key, start_lon, start_lat, end_lon, end_lat):
+    async def fake_search_routes_with_raw_response(app_key, start_lon, start_lat, end_lon, end_lat):
         calls.append((start_lon, start_lat, end_lon, end_lat))
-        return [make_itinerary(route=f"수도권2호선-{len(calls)}")]
+        return TmapRouteSearchResult(
+            itineraries=[make_itinerary(route=f"수도권2호선-{len(calls)}")],
+            raw_response_json=f'{{"call":{len(calls)}}}',
+        )
 
-    monkeypatch.setattr("app.api.search_routes", fake_search_routes)
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fake_search_routes_with_raw_response)
     client = TestClient(app)
 
     first = client.post(
@@ -80,3 +85,72 @@ def test_routes_reuses_cache_for_same_station_names_and_lines(tmp_path, monkeypa
     assert len(calls) == 2
     assert first.json() == second.json()
     assert different_line.json()[0]["summary"] == ["🚇 수도권2호선-2: 강남 → 사당"]
+    cached_raw = db.conn.execute(
+        "SELECT raw_response_json FROM route_options_cache "
+        "WHERE start_name = ? AND start_line = ? AND end_name = ? AND end_line = ?",
+        ("강남", "2호선", "사당", "2호선"),
+    ).fetchone()["raw_response_json"]
+    assert cached_raw == '{"call":1}'
+
+
+def test_cache_route_options_stores_raw_tmap_response(tmp_path):
+    db = Database(tmp_path / "tracker.db")
+    raw_response = '{"metaData":{"plan":{"itineraries":[]}}}'
+
+    db.cache_route_options(
+        "강남",
+        "2호선",
+        "사당",
+        "2호선",
+        [make_itinerary()],
+        raw_tmap_response=raw_response,
+    )
+
+    row = db.conn.execute(
+        "SELECT raw_response_json FROM route_options_cache "
+        "WHERE start_name = ? AND start_line = ? AND end_name = ? AND end_line = ?",
+        ("강남", "2호선", "사당", "2호선"),
+    ).fetchone()
+    assert row["raw_response_json"] == raw_response
+
+
+def test_database_migrates_existing_route_cache_to_raw_response_column(tmp_path):
+    path = tmp_path / "tracker.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE route_options_cache (
+            start_name TEXT NOT NULL,
+            start_line TEXT NOT NULL,
+            end_name TEXT NOT NULL,
+            end_line TEXT NOT NULL,
+            itineraries_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (start_name, start_line, end_name, end_line)
+        );
+        """
+    )
+    conn.close()
+
+    db = Database(path)
+
+    columns = {row["name"] for row in db.conn.execute("PRAGMA table_info(route_options_cache)")}
+    assert "raw_response_json" in columns
+
+
+def test_database_clears_stale_route_cache_when_cache_format_version_changes(tmp_path):
+    path = tmp_path / "tracker.db"
+    db = Database(path)
+    db.cache_route_options("강남", "2호선", "사당", "2호선", [make_itinerary()])
+    db.conn.execute("DELETE FROM app_meta WHERE key = 'route_options_cache_format_version'")
+    db.conn.commit()
+    db.conn.close()
+
+    migrated = Database(path)
+
+    assert migrated.get_cached_route_options("강남", "2호선", "사당", "2호선") is None
+    version = migrated.conn.execute(
+        "SELECT value FROM app_meta WHERE key = 'route_options_cache_format_version'"
+    ).fetchone()["value"]
+    assert version == "2"

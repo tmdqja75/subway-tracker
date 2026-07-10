@@ -29,7 +29,11 @@ class LegStation(BaseModel):
 
 
 class SubwayLeg(BaseModel):
-    """One subway ride within an itinerary."""
+    """One trackable transit ride within an itinerary.
+
+    Historically this was subway-only; bus/train legs use line_key=None and
+    fall back to timer tracking.
+    """
 
     route: str  # Tmap route name, e.g. "수도권3호선"
     line_key: str | None  # normalized key for Seoul realtime APIs, None if uncovered

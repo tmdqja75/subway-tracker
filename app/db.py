@@ -7,6 +7,8 @@ from pathlib import Path
 
 from .models import Itinerary, TrackPoint
 
+ROUTE_OPTIONS_CACHE_FORMAT_VERSION = "2"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS journeys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,9 +37,14 @@ CREATE TABLE IF NOT EXISTS route_options_cache (
     end_name TEXT NOT NULL,
     end_line TEXT NOT NULL,
     itineraries_json TEXT NOT NULL,
+    raw_response_json TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (start_name, start_line, end_name, end_line)
+);
+CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -48,6 +55,34 @@ class Database:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(route_options_cache)")
+        }
+        if "raw_response_json" not in columns:
+            self.conn.execute(
+                "ALTER TABLE route_options_cache ADD COLUMN raw_response_json TEXT"
+            )
+            self.conn.commit()
+
+        cache_version = self.conn.execute(
+            "SELECT value FROM app_meta WHERE key = ?",
+            ("route_options_cache_format_version",),
+        ).fetchone()
+        if (
+            cache_version is None
+            or cache_version["value"] != ROUTE_OPTIONS_CACHE_FORMAT_VERSION
+        ):
+            self.conn.execute("DELETE FROM route_options_cache")
+            self.conn.execute(
+                "INSERT INTO app_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("route_options_cache_format_version", ROUTE_OPTIONS_CACHE_FORMAT_VERSION),
+            )
+            self.conn.commit()
 
     def create_journey(self, itinerary: Itinerary, state: str) -> int:
         cur = self.conn.execute(
@@ -102,6 +137,7 @@ class Database:
         end_name: str,
         end_line: str,
         itineraries: list[Itinerary],
+        raw_tmap_response: str | None = None,
     ) -> None:
         now = int(time.time())
         payload = json.dumps(
@@ -110,11 +146,13 @@ class Database:
         )
         self.conn.execute(
             "INSERT INTO route_options_cache "
-            "(start_name, start_line, end_name, end_line, itineraries_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "(start_name, start_line, end_name, end_line, itineraries_json, raw_response_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(start_name, start_line, end_name, end_line) DO UPDATE SET "
-            "itineraries_json = excluded.itineraries_json, updated_at = excluded.updated_at",
-            (start_name, start_line, end_name, end_line, payload, now, now),
+            "itineraries_json = excluded.itineraries_json, "
+            "raw_response_json = excluded.raw_response_json, "
+            "updated_at = excluded.updated_at",
+            (start_name, start_line, end_name, end_line, payload, raw_tmap_response, now, now),
         )
         self.conn.commit()
 
