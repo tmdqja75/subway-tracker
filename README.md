@@ -32,10 +32,12 @@ frontend served from the same app.
 
 ```bash
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8081
 ```
 
-Open `http://<server>:8000` on your phone.
+Open `http://<server>:8081` on your phone. If the shared Grafana LGTM container
+is running on this machine, copy the OpenTelemetry variables from `.env.example`
+to `.env` to export telemetry from a native run.
 
 ### Tests
 
@@ -52,38 +54,40 @@ keys needed to run tests.
 logged points on a Leaflet map, and a horizontal timeline — useful for
 checking interpolation/logging behavior without re-riding a train.
 
-## Docker + Grafana/Loki
+## Docker + shared Grafana LGTM
 
-The app can also run as a Docker Compose stack with Loki log collection and a
-pre-provisioned Grafana Loki datasource.
+The Compose project runs only the tracker. It exports FastAPI request traces,
+HTTP metrics, and application logs directly to the already-running shared
+Grafana LGTM stack over OTLP/HTTP; it does not start separate Loki, Promtail,
+or Grafana containers.
 
 1. Copy `.env.example` to `.env` and fill in the API keys as described above.
 2. Start the stack:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
-Services:
+The Docker default for `OTEL_EXPORTER_OTLP_ENDPOINT` is
+`http://host.docker.internal:4318`, which reaches the host's shared LGTM
+container from Docker Desktop. Override it only when LGTM runs elsewhere.
 
 | Service | URL | Purpose |
 |---|---|---|
-| `app` | http://localhost:8000 | FastAPI app + static frontend |
-| `grafana` | http://localhost:3000 | Explore/query logs; default login is `admin` / `admin` unless overridden in `.env` |
-| `loki` | http://localhost:3100 | Loki log store API |
-| `promtail` | internal | Scrapes app logs and pushes them to Loki |
+| `app` | http://localhost:8081 | FastAPI app + static frontend |
+| shared Grafana | http://localhost:3000 | Explore/query the tracker telemetry |
 
-The app container writes stdout/stderr to `/var/log/subway-tracker/app.log` via
-`tee`. Promtail reads that shared Docker volume and labels the stream with
-`{job="subway-tracker", service="app"}`. In Grafana, open **Explore**, select
-the `Loki` datasource, and query:
+In Grafana, open **Explore**, select the `Loki` datasource, and query the
+application logs with:
 
 ```logql
-{job="subway-tracker", service="app"}
+{service_name="subway-tracker"}
 ```
 
-Runtime data is bind-mounted from `./data` to `/app/data`, so the SQLite DB and
-station CSV persist outside the container.
+Traces use the `subway-tracker` service name in Tempo, and FastAPI emits HTTP
+request metrics to the shared Prometheus instance. Runtime data is
+bind-mounted from `./data` to `/app/data`, so the SQLite DB and station CSV
+persist outside the container.
 
 ## How tracking works
 

@@ -9,7 +9,8 @@ from app import journey as journey_mod
 from app.config import Settings
 from app.db import Database
 from app.journey import ActiveJourney, JourneyManager
-from app.models import Itinerary, JourneyState, LegStation, SubwayLeg
+from app.models import Itinerary, JourneyState, LegStation, SubwayLeg, TrackPoint
+from app.reitti import ReittiError
 
 
 def make_itinerary(shape: list | None = None) -> Itinerary:
@@ -99,6 +100,70 @@ async def test_uncovered_line_uses_timer_mode(manager, monkeypatch):
     assert j.state == JourneyState.COMPLETED
 
 
+async def test_failed_push_exposes_details_and_retry_resends_all_points(manager, monkeypatch):
+    attempts = []
+
+    async def fake_push(url, token, points):
+        attempts.append(points)
+        if len(attempts) == 1:
+            raise ReittiError(
+                "Reitti auth failed (401)",
+                reason="authentication",
+                sent_points=0,
+            )
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    j = await manager.start_journey(make_itinerary())
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False))
+
+    await manager._push_to_reitti(j)
+
+    assert j.state == JourneyState.PUSH_FAILED
+    assert manager.snapshot()["transfer"] == {
+        "reason": "authentication",
+        "message": "Reitti 인증이 거부됐어요. 서버 토큰을 확인하세요.",
+        "detail": "Reitti auth failed (401)",
+        "sent_points": 0,
+        "total_points": 2,
+        "can_retry": True,
+    }
+
+    await manager.retry_push()
+
+    assert j.state == JourneyState.COMPLETED
+    assert len(attempts) == 2
+    assert attempts[1] == attempts[0]
+    assert manager.snapshot()["transfer"] is None
+
+
+def test_failed_push_is_resumed_after_restart(manager):
+    j = asyncio.run(manager.start_journey(make_itinerary()))
+    manager.db.update_journey(
+        j.id,
+        state=JourneyState.PUSH_FAILED,
+        error="Reitti unreachable after 1 points: connection reset",
+        error_reason="connection",
+        error_sent_points=1,
+        error_total_points=3,
+    )
+    resumed = JourneyManager(manager.db, manager.settings)
+
+    resumed.resume_from_db()
+
+    assert resumed.active is not None
+    assert resumed.active.state == JourneyState.PUSH_FAILED
+    assert resumed.snapshot()["transfer"] == {
+        "reason": "connection",
+        "message": "Reitti 서버에 연결하지 못했어요. 네트워크와 서버 상태를 확인하세요.",
+        "detail": "Reitti unreachable after 1 points: connection reset",
+        "sent_points": 1,
+        "total_points": 3,
+        "can_retry": True,
+    }
+
+
 async def test_arrivals_log_linestring_path(manager, monkeypatch):
     # track geometry with curve vertices between the three stations
     shape = [
@@ -149,6 +214,47 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
     logged = {(round(p.lat, 4), round(p.lon, 4)) for p in pushed}
     # curve vertices from the linestring must appear in the logged path
     assert (37.4850, 127.0400) in logged or (37.4862, 127.0440) in logged
+    assert (37.4885, 127.0500) in logged
+
+
+async def test_waiting_for_train_does_not_reset_linestring_log_clock(manager, monkeypatch):
+    shape = [
+        [37.4837, 127.0354],
+        [37.4850, 127.0400],
+        [37.4862, 127.0440],
+        [37.4870, 127.0468],
+        [37.4885, 127.0500],
+        [37.4909, 127.0553],
+    ]
+
+    async def fake_positions(key, line):
+        return [{"trainNo": "3001", "statnNm": "개포동", "trainSttus": "1"}]
+
+    class FakeTime:
+        @staticmethod
+        def time():
+            return 1_000_040.0
+
+    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+
+    j = await manager.start_journey(make_itinerary(shape=shape))
+    j.state = JourneyState.ON_TRAIN
+    j.train_no = "3001"
+    j.tracking_mode = "realtime"
+    j.leg_started_at = 1_000_000
+    j.prepare_leg()
+    j.last_arrival_time = 1_000_000.0
+    manager._emit_at(j, shape[0][0], shape[0][1], 1_000_000, estimated=False)
+
+    await manager._realtime_update(j)
+    await manager._complete_leg(j)
+
+    logged = {
+        (round(point.lat, 4), round(point.lon, 4))
+        for point in manager.db.get_points(j.id)
+    }
+    assert (37.4850, 127.0400) in logged
     assert (37.4885, 127.0500) in logged
 
 

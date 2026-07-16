@@ -138,6 +138,16 @@ vm.runInContext(`
 `, context);
 
 const marker = markerCalls[0];
+vm.runInContext(`
+  renderTransferFailure({
+    reason: "authentication",
+    message: "Reitti 인증이 거부됐어요. 서버 토큰을 확인하세요.",
+    detail: "Reitti auth failed (401)",
+    sent_points: 1,
+    total_points: 3,
+    can_retry: true,
+  });
+`, context);
 process.stdout.write(JSON.stringify({
   markerCount: markerCalls.length,
   coords: marker?.coords,
@@ -145,6 +155,9 @@ process.stdout.write(JSON.stringify({
   iconClass: marker?.opts?.icon?.className,
   tooltip: marker?.tooltip,
   statusText: elements["track-status"].textContent,
+  transferMessage: elements["done-msg"].textContent,
+  transferDetail: elements["done-detail"].textContent,
+  transferTechnicalDetail: elements["done-technical-detail"].textContent,
 }));
 """
 
@@ -468,6 +481,14 @@ def test_selected_subway_position_uses_emoji_marker_for_approaching_and_boarded_
     assert "열차 2001" in result["tooltip"]
     assert "이동 중" in result["tooltip"]
     assert "열차 2001 · 역삼 이동 중" in result["statusText"]
+
+
+def test_transfer_failure_view_shows_reason_progress_and_technical_detail():
+    result = run_frontend_harness()
+
+    assert result["transferMessage"] == "Reitti 인증이 거부됐어요. 서버 토큰을 확인하세요."
+    assert result["transferDetail"] == "총 3개 위치 중 1개 전송됨 · 남은 기록은 기기에 보관되어 있어요."
+    assert result["transferTechnicalDetail"] == "기술 정보: Reitti auth failed (401)"
 
 
 def test_selected_station_displays_chosen_line_after_autocomplete_pick():

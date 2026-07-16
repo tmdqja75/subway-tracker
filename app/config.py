@@ -17,6 +17,10 @@ class Settings(BaseSettings):
 
     poll_interval_seconds: int = 5
     log_level: str = "INFO"
+    otel_exporter_otlp_endpoint: str = ""
+    otel_service_name: str = "subway-tracker"
+    otel_export_timeout_seconds: int = 5
+    otel_metric_export_interval_millis: int = 10_000
     stations_csv: Path = BASE_DIR / "data" / "stations.csv"
     db_path: Path = BASE_DIR / "data" / "tracker.db"
 

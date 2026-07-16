@@ -33,6 +33,13 @@ MISSING_TRAIN_RETRY_SECONDS = 10
 LOST_TRAIN_FALLBACK_SECONDS = 90
 MAX_SEGMENT_FRACTION = 0.92  # never claim arrival from interpolation alone
 DEFAULT_SEGMENT_SECONDS = 120
+TRANSFER_FAILURE_MESSAGES = {
+    "configuration": "Reitti 서버 설정이 완료되지 않았어요. 서버 주소와 토큰을 확인하세요.",
+    "authentication": "Reitti 인증이 거부됐어요. 서버 토큰을 확인하세요.",
+    "connection": "Reitti 서버에 연결하지 못했어요. 네트워크와 서버 상태를 확인하세요.",
+    "rejected": "Reitti 서버가 위치 기록을 받지 않았어요. 서버 상태를 확인한 뒤 다시 시도하세요.",
+    "unknown": "Reitti 전송 중 알 수 없는 오류가 발생했어요. 다시 시도하세요.",
+}
 
 
 def _lerp(a: float, b: float, f: float) -> float:
@@ -102,6 +109,9 @@ class ActiveJourney:
         self.next_seoul_poll_at = 0.0
         self.last_status: TrainStatus | None = None
         self.error: str | None = None
+        self.error_reason: str | None = None
+        self.error_sent_points: int | None = None
+        self.error_total_points: int | None = None
         self.transfer_started_at: float | None = None
         # path logging: arrivals up to this station index are already written,
         # at last_arrival_time; shape_idx maps station index -> vertex in leg.shape
@@ -154,6 +164,10 @@ class JourneyManager:
         j.train_no = row["train_no"]
         j.tracking_mode = row["tracking_mode"]
         j.leg_started_at = row["leg_started_at"]
+        j.error = row["error"]
+        j.error_reason = row["error_reason"]
+        j.error_sent_points = row["error_sent_points"]
+        j.error_total_points = row["error_total_points"]
         self.active = j
         if j.state == JourneyState.ON_TRAIN:
             j.prepare_leg()  # stale after restart; re-syncs on the next poll
@@ -379,7 +393,11 @@ class JourneyManager:
             if j.anchor_phase == "segment" and j.anchor_idx >= len(names) - 2:
                 await self._complete_leg(j)
                 return True
-            j.last_arrival_time = now  # clock starts when we leave the platform
+            # Keep the boarding timestamp as the start of the unlogged path.
+            # This feed can report the selected train outside our leg several
+            # times while it approaches the boarding station. Resetting this
+            # clock on every such poll shrinks the subsequent segment to about
+            # one second, which down-samples Tmap's curved shape to endpoints.
             j.last_status = TrainStatus(
                 train_no=j.train_no, station_name=train.get("statnNm", "?"),
                 station_index=None, status="before_leg",
@@ -590,16 +608,39 @@ class JourneyManager:
         points = self.db.get_points(j.id)
         try:
             if not self.settings.reitti_url or not self.settings.reitti_token:
-                raise ReittiError("REITTI_URL / REITTI_TOKEN not configured")
+                raise ReittiError(
+                    "REITTI_URL / REITTI_TOKEN not configured",
+                    reason="configuration",
+                )
             sent = await push_points(self.settings.reitti_url, self.settings.reitti_token, points)
             j.state = JourneyState.COMPLETED
             j.error = None
-            self.db.update_journey(j.id, state=j.state, error=None)
+            j.error_reason = None
+            j.error_sent_points = None
+            j.error_total_points = None
+            self.db.update_journey(
+                j.id,
+                state=j.state,
+                error=None,
+                error_reason=None,
+                error_sent_points=None,
+                error_total_points=None,
+            )
             log.info("journey %s complete, %s points pushed to Reitti", j.id, sent)
         except ReittiError as e:
             j.state = JourneyState.PUSH_FAILED
             j.error = str(e)
-            self.db.update_journey(j.id, state=j.state, error=str(e))
+            j.error_reason = e.reason
+            j.error_sent_points = e.sent_points
+            j.error_total_points = len(points)
+            self.db.update_journey(
+                j.id,
+                state=j.state,
+                error=str(e),
+                error_reason=e.reason,
+                error_sent_points=e.sent_points,
+                error_total_points=len(points),
+            )
             log.error("journey %s: Reitti push failed: %s", j.id, e)
 
     # -- helpers ---------------------------------------------------------------
@@ -614,6 +655,20 @@ class JourneyManager:
         if not j:
             return None
         leg = j.leg
+        transfer = None
+        if j.state == JourneyState.PUSH_FAILED:
+            reason = j.error_reason or "unknown"
+            total_points = j.error_total_points
+            if total_points is None:
+                total_points = self.db.point_count(j.id)
+            transfer = {
+                "reason": reason,
+                "message": TRANSFER_FAILURE_MESSAGES.get(reason, TRANSFER_FAILURE_MESSAGES["unknown"]),
+                "detail": j.error or "Reitti transfer failed",
+                "sent_points": j.error_sent_points or 0,
+                "total_points": total_points,
+                "can_retry": True,
+            }
         return {
             "journey_id": j.id,
             "state": j.state,
@@ -635,4 +690,5 @@ class JourneyManager:
             "tracking_mode": j.tracking_mode,
             "point_count": self.db.point_count(j.id),
             "error": j.error,
+            "transfer": transfer,
         }

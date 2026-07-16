@@ -9,6 +9,7 @@ from .api import router
 from .config import get_settings
 from .db import Database
 from .journey import JourneyManager
+from .observability import configure_observability
 from .stations import StationRegistry
 
 def configure_logging() -> None:
@@ -30,8 +31,7 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    app.state.settings = settings
+    settings = app.state.settings
     app.state.stations = StationRegistry.from_csv(settings.stations_csv)
     db = Database(settings.db_path)
     app.state.manager = JourneyManager(db, settings)
@@ -39,10 +39,16 @@ async def lifespan(app: FastAPI):
     logging.getLogger(__name__).info(
         "loaded %s stations", len(app.state.stations.stations)
     )
-    yield
-    app.state.manager._stop_tracker()
+    try:
+        yield
+    finally:
+        app.state.manager._stop_tracker()
+        if app.state.observability:
+            app.state.observability.shutdown()
 
 
 app = FastAPI(title="subway-tracker", lifespan=lifespan)
+app.state.settings = get_settings()
+app.state.observability = configure_observability(app, app.state.settings)
 app.include_router(router)
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

@@ -290,9 +290,30 @@ function resetMap() {
 
 /* ---------- 5. done ---------- */
 
+function renderTransferFailure(transfer) {
+  const sent = transfer?.sent_points ?? 0;
+  const total = transfer?.total_points ?? 0;
+  $("done-msg").textContent = transfer?.message || "전송 중 오류가 발생했어요.";
+  $("done-detail").textContent =
+    `총 ${total}개 위치 중 ${sent}개 전송됨 · 남은 기록은 기기에 보관되어 있어요.`;
+  $("done-technical-detail").textContent = transfer?.detail
+    ? `기술 정보: ${transfer.detail}`
+    : "";
+}
+
 $("retry-push-btn").onclick = async () => {
-  try { await api("/journeys/current/retry-push", { method: "POST" }); refresh(); }
-  catch (e) { alert(e.message); }
+  const button = $("retry-push-btn");
+  button.disabled = true;
+  button.textContent = "Reitti 전송 재시도 중…";
+  try {
+    await api("/journeys/current/retry-push", { method: "POST" });
+    await refresh();
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Reitti 전송 재시도";
+  }
 };
 $("new-journey-btn").onclick = () => { resetMap(); show("search"); };
 
@@ -324,12 +345,14 @@ async function refresh() {
       show("done");
       $("done-title").textContent = "🎉 여정 완료";
       $("done-msg").textContent = `위치 ${snap.point_count}개를 Reitti로 전송했어요.`;
+      $("done-detail").textContent = "";
+      $("done-technical-detail").textContent = "";
       $("retry-push-btn").classList.add("hidden");
       break;
     case "push_failed":
       show("done");
       $("done-title").textContent = "⚠️ Reitti 전송 실패";
-      $("done-msg").textContent = snap.error || "전송 중 오류가 발생했어요.";
+      renderTransferFailure(snap.transfer);
       $("retry-push-btn").classList.remove("hidden");
       break;
     default:

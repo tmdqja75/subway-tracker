@@ -17,7 +17,12 @@ ACC_ESTIMATED = 150  # interpolated / time-based points
 
 
 class ReittiError(Exception):
-    pass
+    """A retryable transfer failure with UI-safe diagnostic metadata."""
+
+    def __init__(self, message: str, *, reason: str = "unknown", sent_points: int = 0):
+        super().__init__(message)
+        self.reason = reason
+        self.sent_points = sent_points
 
 
 async def push_points(base_url: str, token: str, points: list[TrackPoint]) -> int:
@@ -39,13 +44,25 @@ async def push_points(base_url: str, token: str, points: list[TrackPoint]) -> in
                     if resp.status_code < 300:
                         break
                     if resp.status_code in (401, 403):
-                        raise ReittiError(f"Reitti auth failed ({resp.status_code})")
+                        raise ReittiError(
+                            f"Reitti auth failed ({resp.status_code})",
+                            reason="authentication",
+                            sent_points=sent,
+                        )
                 except httpx.HTTPError as e:
                     if attempt == 2:
-                        raise ReittiError(f"Reitti unreachable after {sent} points: {e}")
+                        raise ReittiError(
+                            f"Reitti unreachable after {sent} points: {e}",
+                            reason="connection",
+                            sent_points=sent,
+                        ) from e
                 await asyncio.sleep(1 + attempt)
             else:
-                raise ReittiError(f"Reitti rejected point after {sent} sent")
+                raise ReittiError(
+                    f"Reitti rejected point after {sent} sent",
+                    reason="rejected",
+                    sent_points=sent,
+                )
             sent += 1
             await asyncio.sleep(0.05)  # be gentle
     return sent

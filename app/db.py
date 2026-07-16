@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS journeys (
     train_no TEXT,
     tracking_mode TEXT,           -- realtime | timer
     leg_started_at INTEGER,
-    error TEXT
+    error TEXT,
+    error_reason TEXT,
+    error_sent_points INTEGER,
+    error_total_points INTEGER
 );
 CREATE TABLE IF NOT EXISTS points (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +61,18 @@ class Database:
         self._migrate()
 
     def _migrate(self) -> None:
+        journey_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(journeys)")
+        }
+        for column, column_type in (
+            ("error_reason", "TEXT"),
+            ("error_sent_points", "INTEGER"),
+            ("error_total_points", "INTEGER"),
+        ):
+            if column not in journey_columns:
+                self.conn.execute(f"ALTER TABLE journeys ADD COLUMN {column} {column_type}")
+
         columns = {
             row["name"]
             for row in self.conn.execute("PRAGMA table_info(route_options_cache)")
@@ -66,7 +81,7 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE route_options_cache ADD COLUMN raw_response_json TEXT"
             )
-            self.conn.commit()
+        self.conn.commit()
 
         cache_version = self.conn.execute(
             "SELECT value FROM app_meta WHERE key = ?",
@@ -102,7 +117,7 @@ class Database:
 
     def get_active_journey(self) -> sqlite3.Row | None:
         return self.conn.execute(
-            "SELECT * FROM journeys WHERE state IN ('awaiting_board', 'on_train') "
+            "SELECT * FROM journeys WHERE state IN ('awaiting_board', 'on_train', 'push_failed') "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
 
