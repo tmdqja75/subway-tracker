@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.api import router
 from app.db import Database
-from app.models import Itinerary, LegStation, Station, SubwayLeg
+from app.models import ArrivingTrain, Itinerary, LegStation, Station, SubwayLeg
 from app.stations import StationRegistry
 from app.tmap import TmapRouteSearchResult
 
@@ -154,3 +154,45 @@ def test_database_clears_stale_route_cache_when_cache_format_version_changes(tmp
         "SELECT value FROM app_meta WHERE key = 'route_options_cache_format_version'"
     ).fetchone()["value"]
     assert version == "2"
+
+
+def test_board_rechecks_that_selected_train_is_still_approaching(tmp_path, monkeypatch):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    boarded = []
+
+    class Manager:
+        active = SimpleNamespace(leg=make_itinerary().legs[0])
+
+        async def board(self, train_no):
+            boarded.append(train_no)
+
+    async def fake_fetch_arrivals(*args, **kwargs):
+        return [
+            ArrivingTrain(
+                train_no="approaching",
+                line_name="2호선",
+                terminus="성수",
+                direction_label="성수행 - 역삼방면",
+                eta_seconds=60,
+                arrival_msg="역삼 전역 출발",
+                stations_away=1,
+                stations_away_estimated=False,
+                matches_direction=True,
+                is_express=False,
+            )
+        ]
+
+    app.state.manager = Manager()
+    app.state.settings = SimpleNamespace(
+        tmap_app_key="key", seoul_api_key="key", seoul_api_key_two=""
+    )
+    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
+    client = TestClient(app)
+
+    stale = client.post("/api/journeys/current/board", json={"train_no": "departed"})
+    current = client.post("/api/journeys/current/board", json={"train_no": "approaching"})
+
+    assert stale.status_code == 409
+    assert current.status_code == 200
+    assert boarded == ["approaching"]

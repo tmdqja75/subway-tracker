@@ -22,7 +22,8 @@ BASE = "http://swopenapi.seoul.go.kr/api/subway"
 # Seoul's arvlCd: 0=진입/1=도착/2=출발 at the queried station, 3/4/5=전역출발/진입/도착
 # (one station before it). Anything else (99 = "운행중") gives no fixed-distance
 # code — arvlMsg2 sometimes carries "[N]번째 전역" instead, which we parse directly.
-ARVL_CD_HERE = {"0", "1", "2"}
+ARVL_CD_HERE = {"0", "1"}
+ARVL_CD_DEPARTED = "2"
 ARVL_CD_ONE_AWAY = {"3", "4", "5"}
 BRACKET_COUNT = re.compile(r"\[(\d+)\]")
 
@@ -169,9 +170,10 @@ async def fetch_arrivals(
 ) -> list[ArrivingTrain]:
     """Trains approaching a station on a given line, closest first.
 
-    Direction matching: the arrival API labels trains "성수행 - 구의방면";
-    if the 방면 (or terminus) station appears among the stations we are about
-    to pass through, the train is headed our way.
+    Direction matching: the arrival API labels trains "성수행 - 구의방면".
+    Return only trains whose 방면 (or, when absent, terminus) is one of the
+    stations this leg will pass through. A train that has already departed the
+    boarding station is excluded even though the arrival API still reports it.
 
     Seoul's own distance signal (arvlCd / the "[N]번째 전역" text in arvlMsg2)
     is used when present. Some lines only ever report a countdown in seconds
@@ -197,21 +199,21 @@ async def fetch_arrivals(
     for a in data.get("realtimeArrivalList") or []:
         if subway_id and a.get("subwayId") != subway_id:
             continue
+        arvl_cd = a.get("arvlCd", "")
+        if arvl_cd == ARVL_CD_DEPARTED:
+            continue
         direction_label = a.get("trainLineNm", "")
         toward = ""
         if "-" in direction_label:
             toward = direction_label.split("-")[-1].replace("방면", "").strip()
         terminus = a.get("bstatnNm", "")
-        matches = (
-            normalize_name(toward) in upcoming
-            or normalize_name(terminus) in upcoming
-        )
+        direction_station = normalize_name(toward)
+        matches = direction_station in upcoming if direction_station else normalize_name(terminus) in upcoming
         try:
             eta = int(a.get("barvlDt", 0))
         except ValueError:
             eta = 0
         arrival_msg = a.get("arvlMsg2", "")
-        arvl_cd = a.get("arvlCd", "")
         stations_away: int | None
         estimated = False
         if arvl_cd in ARVL_CD_HERE:
@@ -251,4 +253,4 @@ async def fetch_arrivals(
         "fetch_arrivals station=%s total=%d matching_direction=%d upcoming=%s",
         query_name, len(trains), len(matching), upcoming,
     )
-    return matching if matching else trains[:limit]
+    return matching

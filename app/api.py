@@ -34,6 +34,29 @@ def _route_cache_key(start, end) -> tuple[str, str, str, str]:
     return (normalize_name(start.name), start.line, normalize_name(end.name), end.line)
 
 
+async def _fetch_leg_arrivals(settings, leg):
+    """Return trains that are still boardable for the given subway leg."""
+    upcoming = [s.name for s in leg.stations[1:]]
+    fallback_kwargs = (
+        {"fallback_api_key": settings.seoul_api_key_two}
+        if settings.seoul_api_key_two
+        else {}
+    )
+    stops = len(leg.stations) - 1
+    if stops > 0:
+        fallback_kwargs["avg_seconds_per_station"] = leg.section_time / stops
+    try:
+        return await fetch_arrivals(
+            settings.seoul_api_key,
+            leg.start_name,
+            leg.line_key,
+            upcoming,
+            **fallback_kwargs,
+        )
+    except SeoulApiError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/stations/search")
 async def station_search(request: Request, q: str):
     registry = request.app.state.stations
@@ -100,32 +123,20 @@ async def arrivals(request: Request):
     leg = j.leg
     if not leg.line_key:
         return {"covered": False, "trains": []}
-    upcoming = [s.name for s in leg.stations[1:]]
-    fallback_kwargs = (
-        {"fallback_api_key": settings.seoul_api_key_two}
-        if settings.seoul_api_key_two
-        else {}
-    )
-    stops = len(leg.stations) - 1
-    if stops > 0:
-        fallback_kwargs["avg_seconds_per_station"] = leg.section_time / stops
-    try:
-        trains = await fetch_arrivals(
-            settings.seoul_api_key,
-            leg.start_name,
-            leg.line_key,
-            upcoming,
-            **fallback_kwargs,
-        )
-    except SeoulApiError as e:
-        raise HTTPException(502, str(e))
+    trains = await _fetch_leg_arrivals(settings, leg)
     return {"covered": True, "trains": [t.model_dump() for t in trains]}
 
 
 @router.post("/journeys/current/board")
 async def board(request: Request, body: BoardRequest):
+    manager = request.app.state.manager
+    j = manager.active
+    if body.train_no and j and j.leg.line_key:
+        trains = await _fetch_leg_arrivals(request.app.state.settings, j.leg)
+        if body.train_no not in {train.train_no for train in trains}:
+            raise HTTPException(409, "selected train is no longer approaching this platform")
     try:
-        await request.app.state.manager.board(body.train_no)
+        await manager.board(body.train_no)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"ok": True}

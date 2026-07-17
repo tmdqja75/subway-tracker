@@ -132,3 +132,51 @@ async def test_fetch_arrivals_retries_rate_limited_key_with_fallback_key():
 
     assert [arrival.train_no for arrival in arrivals] == ["1234"]
     assert fallback_route.called
+
+
+@respx.mock
+async def test_fetch_arrivals_excludes_departed_and_opposite_direction_trains():
+    api_key = "secret-seoul-key"
+    respx.get(
+        f"http://swopenapi.seoul.go.kr/api/subway/{api_key}/json/realtimeStationArrival/0/30/상계"
+    ).mock(
+        return_value=Response(
+            200,
+            json={
+                "realtimeArrivalList": [
+                    {
+                        "subwayId": "1004",
+                        "trainLineNm": "오이도행 - 노원방면",
+                        "bstatnNm": "오이도",
+                        "barvlDt": "60",
+                        "btrainNo": "approaching",
+                        "arvlMsg2": "노원 전역 출발",
+                        "arvlCd": "3",
+                    },
+                    {
+                        "subwayId": "1004",
+                        "trainLineNm": "오이도행 - 노원방면",
+                        "bstatnNm": "오이도",
+                        "barvlDt": "0",
+                        "btrainNo": "departed",
+                        "arvlMsg2": "상계 출발",
+                        "arvlCd": "2",
+                    },
+                    {
+                        "subwayId": "1004",
+                        "trainLineNm": "당고개행 - 상계방면",
+                        "bstatnNm": "당고개",
+                        "barvlDt": "90",
+                        "btrainNo": "opposite",
+                        "arvlMsg2": "창동 전역 출발",
+                        "arvlCd": "3",
+                    },
+                ]
+            },
+        )
+    )
+
+    arrivals = await fetch_arrivals(api_key, "상계", "4호선", ["노원"])
+
+    assert [arrival.train_no for arrival in arrivals] == ["approaching"]
+    assert arrivals[0].stations_away == 1
