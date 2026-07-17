@@ -112,6 +112,9 @@ class ActiveJourney:
         self.error_reason: str | None = None
         self.error_sent_points: int | None = None
         self.error_total_points: int | None = None
+        self.transfer_sent_points: int | None = None
+        self.transfer_total_points: int | None = None
+        self.transfer_attempt_base_sent_points = 0
         self.transfer_started_at: float | None = None
         # path logging: arrivals up to this station index are already written,
         # at last_arrival_time; shape_idx maps station index -> vertex in leg.shape
@@ -151,6 +154,7 @@ class JourneyManager:
         self.settings = settings
         self.active: ActiveJourney | None = None
         self._task: asyncio.Task | None = None
+        self._push_task: asyncio.Task | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -168,10 +172,20 @@ class JourneyManager:
         j.error_reason = row["error_reason"]
         j.error_sent_points = row["error_sent_points"]
         j.error_total_points = row["error_total_points"]
+        # Older failed transfers predate the live-progress columns. Preserve
+        # their durable retry counts when they are resumed after migration.
+        j.transfer_sent_points = row["transfer_sent_points"]
+        if j.transfer_sent_points is None:
+            j.transfer_sent_points = row["error_sent_points"]
+        j.transfer_total_points = row["transfer_total_points"]
+        if j.transfer_total_points is None:
+            j.transfer_total_points = row["error_total_points"]
         self.active = j
         if j.state == JourneyState.ON_TRAIN:
             j.prepare_leg()  # stale after restart; re-syncs on the next poll
             self._start_tracker()
+        elif j.state == JourneyState.PUSHING:
+            self._start_push(j, resume=True)
         log.info("resumed journey %s in state %s", j.id, j.state)
 
     async def start_journey(self, itinerary: Itinerary) -> ActiveJourney:
@@ -193,6 +207,8 @@ class JourneyManager:
         j.state = JourneyState.ON_TRAIN
         j.leg_started_at = int(now)
         j.transfer_started_at = None
+        j.transfer_sent_points = None
+        j.transfer_total_points = None
         j.prepare_leg()
         # user is standing on the platform: log the boarding station now
         start = j.leg.stations[0]
@@ -203,6 +219,8 @@ class JourneyManager:
             train_no=train_no,
             tracking_mode=j.tracking_mode,
             leg_started_at=int(now),
+            transfer_sent_points=None,
+            transfer_total_points=None,
         )
         self._start_tracker()
 
@@ -225,6 +243,7 @@ class JourneyManager:
     async def cancel(self) -> None:
         j = self._require_active()
         self._stop_tracker()
+        self._stop_push()
         j.state = JourneyState.CANCELLED
         self.db.update_journey(j.id, state=j.state)
         self.active = None
@@ -233,7 +252,7 @@ class JourneyManager:
         j = self._require_active()
         if j.state != JourneyState.PUSH_FAILED:
             raise ValueError(f"nothing to retry in state {j.state}")
-        await self._push_to_reitti(j)
+        self._start_push(j)
 
     # -- tracking loop -------------------------------------------------------
 
@@ -245,6 +264,11 @@ class JourneyManager:
         task, self._task = self._task, None
         # never cancel the task we're currently running inside (leg completion
         # is triggered from within the loop itself)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _stop_push(self) -> None:
+        task, self._push_task = self._push_task, None
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
@@ -590,7 +614,7 @@ class JourneyManager:
         self._emit(j, end.lat, end.lon, estimated=False)
         self._stop_tracker()
         if j.is_last_leg:
-            await self._push_to_reitti(j)
+            self._start_push(j)
             return
         j.transfer_started_at = time.time()
         j.leg_idx += 1
@@ -604,20 +628,66 @@ class JourneyManager:
         )
         log.info("journey %s: transfer, now awaiting leg %s", j.id, j.leg_idx)
 
+    def _start_push(self, j: ActiveJourney, *, resume: bool = False) -> None:
+        if self._push_task and not self._push_task.done():
+            return
+        points = self.db.get_points(j.id)
+        if not resume:
+            j.transfer_sent_points = 0
+            j.transfer_total_points = len(points)
+        else:
+            j.transfer_sent_points = min(j.transfer_sent_points or 0, len(points))
+            j.transfer_total_points = len(points)
+        j.state = JourneyState.PUSHING
+        j.error = None
+        j.error_reason = None
+        j.error_sent_points = None
+        j.error_total_points = None
+        self.db.update_journey(
+            j.id,
+            state=j.state,
+            error=None,
+            error_reason=None,
+            error_sent_points=None,
+            error_total_points=None,
+            transfer_sent_points=j.transfer_sent_points,
+            transfer_total_points=j.transfer_total_points,
+        )
+        self._push_task = asyncio.create_task(self._push_to_reitti(j))
+
+    async def _record_push_progress(self, j: ActiveJourney, sent_in_attempt: int) -> None:
+        sent_points = min(
+            (j.transfer_attempt_base_sent_points or 0) + sent_in_attempt,
+            j.transfer_total_points or 0,
+        )
+        j.transfer_sent_points = sent_points
+        self.db.update_journey(j.id, transfer_sent_points=sent_points)
+
     async def _push_to_reitti(self, j: ActiveJourney) -> None:
         points = self.db.get_points(j.id)
+        if j.transfer_total_points is None:
+            j.transfer_sent_points = 0
+            j.transfer_total_points = len(points)
+        base_sent_points = min(j.transfer_sent_points or 0, len(points))
+        j.transfer_attempt_base_sent_points = base_sent_points
+        points_to_push = points[base_sent_points:]
         try:
             if not self.settings.reitti_url or not self.settings.reitti_token:
                 raise ReittiError(
                     "REITTI_URL / REITTI_TOKEN not configured",
                     reason="configuration",
                 )
-            sent = await push_points(self.settings.reitti_url, self.settings.reitti_token, points)
+            sent = await push_points(
+                self.settings.reitti_url,
+                self.settings.reitti_token,
+                points_to_push,
+                on_progress=lambda sent_in_attempt: self._record_push_progress(j, sent_in_attempt),
+            )
             j.state = JourneyState.COMPLETED
             j.error = None
             j.error_reason = None
-            j.error_sent_points = None
-            j.error_total_points = None
+            j.transfer_sent_points = base_sent_points + sent
+            j.transfer_total_points = len(points)
             self.db.update_journey(
                 j.id,
                 state=j.state,
@@ -625,21 +695,27 @@ class JourneyManager:
                 error_reason=None,
                 error_sent_points=None,
                 error_total_points=None,
+                transfer_sent_points=j.transfer_sent_points,
+                transfer_total_points=j.transfer_total_points,
             )
             log.info("journey %s complete, %s points pushed to Reitti", j.id, sent)
         except ReittiError as e:
             j.state = JourneyState.PUSH_FAILED
             j.error = str(e)
             j.error_reason = e.reason
-            j.error_sent_points = e.sent_points
+            j.error_sent_points = base_sent_points + e.sent_points
             j.error_total_points = len(points)
+            j.transfer_sent_points = j.error_sent_points
+            j.transfer_total_points = len(points)
             self.db.update_journey(
                 j.id,
                 state=j.state,
                 error=str(e),
                 error_reason=e.reason,
-                error_sent_points=e.sent_points,
+                error_sent_points=j.error_sent_points,
                 error_total_points=len(points),
+                transfer_sent_points=j.transfer_sent_points,
+                transfer_total_points=j.transfer_total_points,
             )
             log.error("journey %s: Reitti push failed: %s", j.id, e)
 
@@ -655,20 +731,28 @@ class JourneyManager:
         if not j:
             return None
         leg = j.leg
-        transfer = None
-        if j.state == JourneyState.PUSH_FAILED:
-            reason = j.error_reason or "unknown"
-            total_points = j.error_total_points
+        transfer: dict[str, object] | None = None
+        if j.state in (JourneyState.PUSHING, JourneyState.COMPLETED, JourneyState.PUSH_FAILED):
+            total_points = j.transfer_total_points
             if total_points is None:
                 total_points = self.db.point_count(j.id)
+            sent_points = min(j.transfer_sent_points or 0, total_points)
             transfer = {
+                "sent_points": sent_points,
+                "total_points": total_points,
+                "remaining_points": max(total_points - sent_points, 0),
+                "progress_percent": 100 if total_points == 0 else round(sent_points / total_points * 100),
+            }
+        if j.state == JourneyState.PUSH_FAILED:
+            reason = j.error_reason or "unknown"
+            if transfer is None:
+                transfer = {}
+            transfer.update({
                 "reason": reason,
                 "message": TRANSFER_FAILURE_MESSAGES.get(reason, TRANSFER_FAILURE_MESSAGES["unknown"]),
                 "detail": j.error or "Reitti transfer failed",
-                "sent_points": j.error_sent_points or 0,
-                "total_points": total_points,
                 "can_retry": True,
-            }
+            })
         return {
             "journey_id": j.id,
             "state": j.state,
@@ -691,4 +775,17 @@ class JourneyManager:
             "point_count": self.db.point_count(j.id),
             "error": j.error,
             "transfer": transfer,
+            "trip": {
+                "legs": [
+                    {
+                        "route": trip_leg.route,
+                        "start": trip_leg.start_name,
+                        "end": trip_leg.end_name,
+                        "stations": [s.model_dump() for s in trip_leg.stations],
+                        "shape": trip_leg.shape,
+                        "transfer_walk_shape": trip_leg.transfer_walk_shape,
+                    }
+                    for trip_leg in j.itinerary.legs
+                ],
+            },
         }

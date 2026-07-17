@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class JourneyState(StrEnum):
     AWAITING_BOARD = "awaiting_board"
     ON_TRAIN = "on_train"
+    PUSHING = "pushing"
     COMPLETED = "completed"
     PUSH_FAILED = "push_failed"
     CANCELLED = "cancelled"

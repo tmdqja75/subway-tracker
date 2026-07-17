@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS journeys (
     error TEXT,
     error_reason TEXT,
     error_sent_points INTEGER,
-    error_total_points INTEGER
+    error_total_points INTEGER,
+    transfer_sent_points INTEGER,
+    transfer_total_points INTEGER
 );
 CREATE TABLE IF NOT EXISTS points (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,6 +71,8 @@ class Database:
             ("error_reason", "TEXT"),
             ("error_sent_points", "INTEGER"),
             ("error_total_points", "INTEGER"),
+            ("transfer_sent_points", "INTEGER"),
+            ("transfer_total_points", "INTEGER"),
         ):
             if column not in journey_columns:
                 self.conn.execute(f"ALTER TABLE journeys ADD COLUMN {column} {column_type}")
@@ -117,7 +121,7 @@ class Database:
 
     def get_active_journey(self) -> sqlite3.Row | None:
         return self.conn.execute(
-            "SELECT * FROM journeys WHERE state IN ('awaiting_board', 'on_train', 'push_failed') "
+            "SELECT * FROM journeys WHERE state IN ('awaiting_board', 'on_train', 'pushing', 'push_failed') "
             "ORDER BY id DESC LIMIT 1"
         ).fetchone()
 

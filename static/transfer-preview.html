@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Reitti transfer preview</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css?v=20260717-transfer-progress">
+</head>
+<body>
+<header class="app-header">
+  <h1>🚇 Subway Tracker</h1>
+  <a href="/debug.html" class="header-link">Debug map</a>
+</header>
+
+<section id="view-search" class="view hidden">
+  <div class="field"><label>출발역</label><input id="start-input"><ul id="start-suggest" class="suggest"></ul></div>
+  <div class="field"><label>도착역</label><input id="end-input"><ul id="end-suggest" class="suggest"></ul></div>
+  <button id="search-btn" class="primary">경로 검색</button><p id="search-error" class="error"></p>
+</section>
+<section id="view-routes" class="view hidden"><div id="route-list"></div><button id="routes-back" class="secondary">← 다시 검색</button></section>
+<section id="view-picker" class="view hidden">
+  <h2 id="picker-title">열차 선택</h2><p id="picker-sub" class="sub"></p><div id="train-list"></div>
+  <button id="picker-refresh" class="secondary">새로고침</button><button id="picker-timer-board" class="secondary hidden">탑승했어요</button><button id="picker-cancel" class="danger">여정 취소</button>
+</section>
+<section id="view-track" class="view hidden">
+  <div id="map"></div><div id="track-info" class="card"><div id="track-leg"></div><div id="track-status"></div><div id="track-points" class="sub"></div></div>
+  <div class="btn-row"><button id="alight-btn" class="primary">지금 내렸어요</button><button id="missed-btn" class="secondary">열차 잘못 탔어요</button><button id="track-cancel" class="danger">여정 취소</button></div>
+</section>
+<section id="view-done" class="view hidden">
+  <h2 id="done-title"></h2>
+  <p id="done-msg"></p>
+  <p id="done-detail" class="sub"></p>
+  <p id="done-technical-detail" class="sub"></p>
+  <div class="card transfer-card">
+    <div class="transfer-stats">
+      <div><span>전체 데이터</span><strong id="transfer-total">0</strong></div>
+      <div><span>전송 완료</span><strong id="transfer-sent">0</strong></div>
+      <div><span>남은 데이터</span><strong id="transfer-remaining">0</strong></div>
+    </div>
+    <div class="transfer-progress-label"><span id="transfer-progress-text">0%</span><span id="transfer-progress-count">0 / 0</span></div>
+    <div class="transfer-progress" role="progressbar" aria-label="Reitti 데이터 전송 진행률"><div id="transfer-progress-bar" class="transfer-progress-bar"></div></div>
+  </div>
+  <div id="transfer-map" aria-label="전체 여정 경로 지도"></div>
+  <button id="retry-push-btn" class="primary hidden">Reitti 전송 재시도</button>
+  <button id="new-journey-btn" class="secondary">새 여정</button>
+</section>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const previewSnapshot = {
+  journey_id: "preview-after-arrival",
+  state: "pushing",
+  leg_idx: 0,
+  leg_count: 1,
+  point_count: 32,
+  transfer: { sent_points: 14, total_points: 32, remaining_points: 18, progress_percent: 44 },
+  trip: { legs: [{
+    route: "수도권2호선", start: "강남", end: "삼성",
+    stations: [
+      { name: "강남", lat: 37.4980, lon: 127.0277 },
+      { name: "역삼", lat: 37.5006, lon: 127.0364 },
+      { name: "선릉", lat: 37.5045, lon: 127.0490 },
+      { name: "삼성", lat: 37.5088, lon: 127.0631 }
+    ],
+    shape: [[37.4980,127.0277],[37.4992,127.0310],[37.5006,127.0364],[37.5028,127.0425],[37.5045,127.0490],[37.5065,127.0562],[37.5088,127.0631]],
+    transfer_walk_shape: []
+  }]}
+};
+window.fetch = async (url) => new Response(JSON.stringify(
+  String(url).includes("/api/journeys/current") ? previewSnapshot : {}
+), { status: 200, headers: { "Content-Type": "application/json" } });
+</script>
+<script src="app.js?v=20260717-transfer-progress"></script>
+</body>
+</html>

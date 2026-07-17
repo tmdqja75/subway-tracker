@@ -19,6 +19,7 @@ function makeElement(id) {
     textContent: "",
     innerHTML: "",
     disabled: false,
+    style: {},
     value: "",
     classList: {
       toggle() {},
@@ -148,6 +149,34 @@ vm.runInContext(`
     can_retry: true,
   });
 `, context);
+vm.runInContext(`
+  renderTransfer({
+    journey_id: 9,
+    transfer: { sent_points: 2, total_points: 5, remaining_points: 3, progress_percent: 40 },
+    trip: {
+      legs: [
+        {
+          shape: [[37.498, 127.0277], [37.49, 127.01]],
+          stations: [{ name: "강남", lat: 37.498, lon: 127.0277 }, { name: "교대", lat: 37.49, lon: 127.01 }],
+          transfer_walk_shape: [[37.49, 127.01], [37.489, 127.009]],
+        },
+        {
+          shape: [[37.489, 127.009], [37.4766, 126.9816]],
+          stations: [{ name: "사당", lat: 37.489, lon: 127.009 }, { name: "서울역", lat: 37.4766, lon: 126.9816 }],
+          transfer_walk_shape: [],
+        },
+      ],
+    },
+  });
+  window.__transferView = {
+    routeCoords: transferRouteLine.coords,
+    total: document.getElementById("transfer-total").textContent,
+    sent: document.getElementById("transfer-sent").textContent,
+    remaining: document.getElementById("transfer-remaining").textContent,
+    progress: document.getElementById("transfer-progress-text").textContent,
+    progressWidth: document.getElementById("transfer-progress-bar").style.width,
+  };
+`, context);
 process.stdout.write(JSON.stringify({
   markerCount: markerCalls.length,
   coords: marker?.coords,
@@ -158,6 +187,7 @@ process.stdout.write(JSON.stringify({
   transferMessage: elements["done-msg"].textContent,
   transferDetail: elements["done-detail"].textContent,
   transferTechnicalDetail: elements["done-technical-detail"].textContent,
+  transferView: context.__transferView,
 }));
 """
 
@@ -177,6 +207,7 @@ function makeElement(id) {
     textContent: "",
     innerHTML: "",
     disabled: false,
+    style: {},
     value: "",
     children: [],
     listeners: {},
@@ -257,6 +288,7 @@ function makeElement(id) {
     textContent: "",
     innerHTML: "",
     disabled: false,
+    style: {},
     value: "",
     children: [],
     className: "",
@@ -303,6 +335,16 @@ const context = {
           matches_direction: true,
           is_express: false,
         },
+        {
+          train_no: "9999",
+          line_name: "2호선",
+          terminus: "신도림",
+          direction_label: "신도림행 - 삼성방면",
+          eta_seconds: 60,
+          arrival_msg: "삼성 전역 출발",
+          matches_direction: false,
+          is_express: false,
+        },
       ],
     } : { state: "idle" },
   }),
@@ -324,6 +366,7 @@ vm.createContext(context);
 vm.runInContext(code, context, { filename: scriptPath });
 
 (async () => {
+  for (let i = 0; i < 4; i++) await Promise.resolve();  // let app.js's initial refresh settle first
   await context.loadArrivals({
     leg_idx: 0,
     leg_count: 1,
@@ -360,6 +403,7 @@ function makeElement(id) {
     textContent: "",
     innerHTML: "",
     disabled: false,
+    style: {},
     value: "",
     children: [],
     className: "",
@@ -491,6 +535,24 @@ def test_transfer_failure_view_shows_reason_progress_and_technical_detail():
     assert result["transferTechnicalDetail"] == "기술 정보: Reitti auth failed (401)"
 
 
+def test_transfer_view_shows_live_counts_progress_and_entire_trip_route():
+    result = run_frontend_harness()["transferView"]
+
+    assert result["total"] == 5
+    assert result["sent"] == 2
+    assert result["remaining"] == 3
+    assert result["progress"] == "40%"
+    assert result["progressWidth"] == "40%"
+    assert result["routeCoords"] == [
+        [37.498, 127.0277],
+        [37.49, 127.01],
+        [37.49, 127.01],
+        [37.489, 127.009],
+        [37.489, 127.009],
+        [37.4766, 126.9816],
+    ]
+
+
 def test_selected_station_displays_chosen_line_after_autocomplete_pick():
     result = run_autocomplete_harness()
 
@@ -506,6 +568,15 @@ def test_train_picker_uses_actual_location_when_eta_is_zero():
     assert "곧 도착" not in result["cards"][1]
     assert '<span class="eta">전역 도착</span>' in result["cards"][0]
     assert '<span class="eta">3번째 전역</span>' in result["cards"][1]
+    assert all("9999" not in card for card in result["cards"])
+
+
+def test_train_picker_invalidates_stale_arrival_responses_and_bypasses_http_cache():
+    source = Path("static/app.js").read_text()
+
+    assert 'cache: "no-store"' in source
+    assert "const requestSeq = ++arrivalsRequestSeq;" in source
+    assert "if (requestSeq !== arrivalsRequestSeq) return;" in source
 
 
 def test_route_picker_renders_and_selects_every_api_route_option():

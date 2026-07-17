@@ -67,11 +67,23 @@
   <p id="done-msg"></p>
   <p id="done-detail" class="sub"></p>
   <p id="done-technical-detail" class="sub"></p>
+  <div class="card transfer-card">
+    <div class="transfer-stats">
+      <div><span>전체 데이터</span><strong id="transfer-total">0</strong></div>
+      <div><span>전송 완료</span><strong id="transfer-sent">0</strong></div>
+      <div><span>남은 데이터</span><strong id="transfer-remaining">0</strong></div>
+    </div>
+    <div class="transfer-progress-label"><span id="transfer-progress-text">0%</span><span id="transfer-progress-count">0 / 0</span></div>
+    <div class="transfer-progress" role="progressbar" aria-label="Reitti 데이터 전송 진행률">
+      <div id="transfer-progress-bar" class="transfer-progress-bar"></div>
+    </div>
+  </div>
+  <div id="transfer-map" aria-label="전체 여정 경로 지도"></div>
   <button id="retry-push-btn" class="primary hidden">Reitti 전송 재시도</button>
   <button id="new-journey-btn" class="secondary">새 여정</button>
 </section>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=20260716-reitti-transfer-details"></script>
+<script src="app.js?v=20260717-transfer-progress"></script>
 </body>
 </html>

@@ -56,7 +56,7 @@ async def test_full_leg_completes_and_pushes(manager, monkeypatch):
 
     pushed = []
 
-    async def fake_push(url, token, points):
+    async def fake_push(url, token, points, *, on_progress=None):
         pushed.extend(points)
         return len(points)
 
@@ -72,7 +72,7 @@ async def test_full_leg_completes_and_pushes(manager, monkeypatch):
 
     for _ in range(50):
         await asyncio.sleep(0.05)
-        if j.state != JourneyState.ON_TRAIN:
+        if j.state in (JourneyState.COMPLETED, JourneyState.PUSH_FAILED):
             break
     assert j.state == JourneyState.COMPLETED
     assert pushed, "points must be pushed to Reitti"
@@ -80,7 +80,7 @@ async def test_full_leg_completes_and_pushes(manager, monkeypatch):
 
 
 async def test_uncovered_line_uses_timer_mode(manager, monkeypatch):
-    async def fake_push(url, token, points):
+    async def fake_push(url, token, points, *, on_progress=None):
         return len(points)
 
     monkeypatch.setattr(journey_mod, "push_points", fake_push)
@@ -95,7 +95,7 @@ async def test_uncovered_line_uses_timer_mode(manager, monkeypatch):
 
     for _ in range(50):
         await asyncio.sleep(0.05)
-        if j.state != JourneyState.ON_TRAIN:
+        if j.state in (JourneyState.COMPLETED, JourneyState.PUSH_FAILED):
             break
     assert j.state == JourneyState.COMPLETED
 
@@ -103,7 +103,7 @@ async def test_uncovered_line_uses_timer_mode(manager, monkeypatch):
 async def test_failed_push_exposes_details_and_retry_resends_all_points(manager, monkeypatch):
     attempts = []
 
-    async def fake_push(url, token, points):
+    async def fake_push(url, token, points, *, on_progress=None):
         attempts.append(points)
         if len(attempts) == 1:
             raise ReittiError(
@@ -127,15 +127,67 @@ async def test_failed_push_exposes_details_and_retry_resends_all_points(manager,
         "detail": "Reitti auth failed (401)",
         "sent_points": 0,
         "total_points": 2,
+        "remaining_points": 2,
+        "progress_percent": 0,
         "can_retry": True,
     }
 
     await manager.retry_push()
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if j.state == JourneyState.COMPLETED:
+            break
 
     assert j.state == JourneyState.COMPLETED
     assert len(attempts) == 2
     assert attempts[1] == attempts[0]
-    assert manager.snapshot()["transfer"] is None
+    assert manager.snapshot()["transfer"] == {
+        "sent_points": 2,
+        "total_points": 2,
+        "remaining_points": 0,
+        "progress_percent": 100,
+    }
+
+
+async def test_final_alight_starts_background_push_and_exposes_live_progress(manager, monkeypatch):
+    first_point_sent = asyncio.Event()
+    finish_push = asyncio.Event()
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        assert on_progress is not None
+        await on_progress(1)
+        first_point_sent.set()
+        await finish_push.wait()
+        await on_progress(2)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    j = await manager.start_journey(make_itinerary())
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False))
+
+    await manager.board(None)
+    await manager.alight()
+    await first_point_sent.wait()
+
+    assert j.state == JourneyState.PUSHING
+    assert manager.snapshot()["transfer"] == {
+        "sent_points": 1,
+        "total_points": 4,
+        "remaining_points": 3,
+        "progress_percent": 25,
+    }
+
+    finish_push.set()
+    await manager._push_task
+
+    assert j.state == JourneyState.COMPLETED
+    assert manager.snapshot()["transfer"] == {
+        "sent_points": 4,
+        "total_points": 4,
+        "remaining_points": 0,
+        "progress_percent": 100,
+    }
 
 
 def test_failed_push_is_resumed_after_restart(manager):
@@ -160,7 +212,47 @@ def test_failed_push_is_resumed_after_restart(manager):
         "detail": "Reitti unreachable after 1 points: connection reset",
         "sent_points": 1,
         "total_points": 3,
+        "remaining_points": 2,
+        "progress_percent": 33,
         "can_retry": True,
+    }
+
+
+async def test_in_progress_push_resumes_from_last_confirmed_point_after_restart(manager, monkeypatch):
+    j = await manager.start_journey(make_itinerary())
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False))
+    manager.db.update_journey(
+        j.id,
+        state=JourneyState.PUSHING,
+        transfer_sent_points=1,
+        transfer_total_points=2,
+    )
+    pushed = []
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        pushed.extend(points)
+        assert on_progress is not None
+        await on_progress(1)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    resumed = JourneyManager(manager.db, manager.settings)
+    resumed.resume_from_db()
+
+    assert resumed.active is not None
+    assert resumed.active.state == JourneyState.PUSHING
+    assert resumed._push_task is not None
+    await resumed._push_task
+
+    assert [point.ts for point in pushed] == [2]
+    snapshot = resumed.snapshot()
+    assert snapshot is not None
+    assert snapshot["transfer"] == {
+        "sent_points": 2,
+        "total_points": 2,
+        "remaining_points": 0,
+        "progress_percent": 100,
     }
 
 
@@ -186,7 +278,7 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
 
     pushed = []
 
-    async def fake_push(url, token, points):
+    async def fake_push(url, token, points, *, on_progress=None):
         pushed.extend(points)
         return len(points)
 
@@ -208,7 +300,7 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
     await manager.board("3001")
     for _ in range(50):
         await asyncio.sleep(0.05)
-        if j.state != JourneyState.ON_TRAIN:
+        if j.state in (JourneyState.COMPLETED, JourneyState.PUSH_FAILED):
             break
     assert j.state == JourneyState.COMPLETED
     logged = {(round(p.lat, 4), round(p.lon, 4)) for p in pushed}
@@ -294,7 +386,7 @@ async def test_transfer_walk_linestring_logged_before_next_subway_leg(manager, m
     )
     pushed = []
 
-    async def fake_push(url, token, points):
+    async def fake_push(url, token, points, *, on_progress=None):
         pushed.extend(points)
         return len(points)
 
@@ -318,6 +410,10 @@ async def test_transfer_walk_linestring_logged_before_next_subway_leg(manager, m
     await manager.board(None)
     await manager.alight()
 
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if j.state == JourneyState.COMPLETED:
+            break
     assert j.state == JourneyState.COMPLETED
     logged = {(round(p.lat, 4), round(p.lon, 4)) for p in pushed}
     assert (37.4767, 126.9813) in logged

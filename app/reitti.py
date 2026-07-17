@@ -7,6 +7,7 @@ Reitti deduplicates on timestamp, so retrying a partial push is safe.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -25,7 +26,13 @@ class ReittiError(Exception):
         self.sent_points = sent_points
 
 
-async def push_points(base_url: str, token: str, points: list[TrackPoint]) -> int:
+async def push_points(
+    base_url: str,
+    token: str,
+    points: list[TrackPoint],
+    *,
+    on_progress: Callable[[int], Awaitable[None]] | None = None,
+) -> int:
     """Push all points; returns count sent. Raises ReittiError on failure."""
     url = f"{base_url.rstrip('/')}/api/v1/ingest/owntracks"
     sent = 0
@@ -64,5 +71,7 @@ async def push_points(base_url: str, token: str, points: list[TrackPoint]) -> in
                     sent_points=sent,
                 )
             sent += 1
+            if on_progress:
+                await on_progress(sent)
             await asyncio.sleep(0.05)  # be gentle
     return sent

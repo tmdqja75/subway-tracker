@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.manager._stop_tracker()
+        app.state.manager._stop_push()
         if app.state.observability:
             app.state.observability.shutdown()
 

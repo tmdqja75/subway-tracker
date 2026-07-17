@@ -7,8 +7,11 @@ const views = ["search", "routes", "picker", "track", "done"];
 
 let itineraries = [];
 let map, trainMarker, routeLine, pathLine;
+let transferMap, transferRouteLine, transferJourneyId;
 let pollTimer = null;
 let arrivalsTimer = null;
+let transferTimer = null;
+let arrivalsRequestSeq = 0;
 
 function show(view) {
   views.forEach((v) => $(`view-${v}`).classList.toggle("hidden", v !== view));
@@ -21,6 +24,7 @@ async function api(path, opts = {}) {
   try {
     resp = await fetch(`/api${path}`, {
       headers: { "Content-Type": "application/json" },
+      cache: "no-store",
       ...opts,
     });
   } catch {
@@ -142,6 +146,7 @@ async function selectRoute(i) {
 /* ---------- 3. train picker ---------- */
 
 async function loadArrivals(snap) {
+  const requestSeq = ++arrivalsRequestSeq;
   $("picker-title").textContent = `열차 선택 — ${snap.leg.start} 출발`;
   $("picker-sub").textContent = `${snap.leg.route} · ${snap.leg.start} → ${snap.leg.end} (${snap.leg_idx + 1}/${snap.leg_count}구간)`;
   const list = $("train-list");
@@ -153,14 +158,16 @@ async function loadArrivals(snap) {
   $("picker-timer-board").classList.add("hidden");
   try {
     const data = await api("/journeys/current/arrivals");
+    if (requestSeq !== arrivalsRequestSeq) return;
     list.innerHTML = "";
     if (!data.trains.length) {
       list.innerHTML = `<div class="card">접근 중인 열차 정보가 없어요. 잠시 후 새로고침하세요.</div>`;
       return;
     }
     data.trains.forEach((t) => {
+      if (!t.matches_direction) return;  // defense in depth for unexpected API data
       const div = document.createElement("div");
-      div.className = "card train-card" + (t.matches_direction ? "" : " dim");
+      div.className = "card train-card";
       let stationsAway;
       if (t.stations_away === 0) stationsAway = "진입";
       else if (t.stations_away === 1) stationsAway = "1정거장 전";
@@ -168,12 +175,13 @@ async function loadArrivals(snap) {
       else stationsAway = t.arrival_msg || "정보 없음";
       div.innerHTML = `
         <div><span class="no">${t.train_no}편성</span>${t.is_express ? '<span class="badge">급행</span>' : ""}
-        ${t.matches_direction ? "" : '<span class="badge">방향 확인</span>'}<span class="eta">${stationsAway}</span></div>
+        <span class="eta">${stationsAway}</span></div>
         <div class="dir">${t.direction_label} · ${t.terminus}행</div>`;
       div.onclick = () => boardTrain(t.train_no);
       list.appendChild(div);
     });
   } catch (e) {
+    if (requestSeq !== arrivalsRequestSeq) return;
     list.innerHTML = `<div class="card error">${e.message}</div>`;
   }
 }
@@ -190,10 +198,15 @@ $("picker-timer-board").onclick = () => boardTrain(null);
 $("picker-cancel").onclick = cancelJourney;
 
 function startArrivalsPolling(snap) {
-  stopArrivalsPolling();
+  if (arrivalsTimer) return;
   arrivalsTimer = setInterval(() => loadArrivals(snap), 15000);
 }
-function stopArrivalsPolling() { clearInterval(arrivalsTimer); arrivalsTimer = null; }
+function stopArrivalsPolling() {
+  const wasPolling = arrivalsTimer !== null;
+  clearInterval(arrivalsTimer);
+  arrivalsTimer = null;
+  if (wasPolling) arrivalsRequestSeq++;  // invalidate an in-flight picker response
+}
 
 /* ---------- 4. tracking map ---------- */
 
@@ -285,10 +298,61 @@ async function cancelJourney() {
 
 function resetMap() {
   if (map) { map.remove(); map = null; }
+  if (transferMap) { transferMap.remove(); transferMap = null; }
   trainMarker = null; routeLine = null; pathLine = null;
+  transferRouteLine = null; transferJourneyId = null;
 }
 
 /* ---------- 5. done ---------- */
+
+function ensureTransferMap() {
+  if (transferMap) return;
+  transferMap = L.map("transfer-map");
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "&copy; OpenStreetMap",
+  }).addTo(transferMap);
+}
+
+function tripRouteCoordinates(trip) {
+  const coords = [];
+  (trip?.legs || []).forEach((leg) => {
+    const rail = leg.shape?.length ? leg.shape : leg.stations.map((s) => [s.lat, s.lon]);
+    coords.push(...rail);
+    coords.push(...(leg.transfer_walk_shape || []));
+  });
+  return coords;
+}
+
+function renderTransferMap(snap) {
+  if (transferJourneyId === snap.journey_id && transferRouteLine) return;
+  if (transferMap) { transferMap.remove(); transferMap = null; transferRouteLine = null; }
+  ensureTransferMap();
+  const coords = tripRouteCoordinates(snap.trip);
+  if (!coords.length) return;
+  transferRouteLine = L.polyline(coords, { color: "#1c3f94", weight: 5, opacity: 0.75 }).addTo(transferMap);
+  const legs = snap.trip?.legs || [];
+  const start = legs[0]?.stations?.[0];
+  const end = legs.at(-1)?.stations?.at(-1);
+  if (start) L.circleMarker([start.lat, start.lon], { radius: 7, color: "#16a34a", fillOpacity: 1 }).addTo(transferMap).bindTooltip(`출발: ${start.name}`);
+  if (end) L.circleMarker([end.lat, end.lon], { radius: 7, color: "#dc2626", fillOpacity: 1 }).addTo(transferMap).bindTooltip(`도착: ${end.name}`);
+  transferMap.fitBounds(transferRouteLine.getBounds(), { padding: [30, 30] });
+  transferJourneyId = snap.journey_id;
+}
+
+function renderTransfer(snap) {
+  const transfer = snap.transfer || {};
+  const total = transfer.total_points ?? 0;
+  const sent = transfer.sent_points ?? 0;
+  const remaining = transfer.remaining_points ?? Math.max(total - sent, 0);
+  const percent = transfer.progress_percent ?? (total === 0 ? 100 : Math.round(sent / total * 100));
+  $("transfer-total").textContent = total;
+  $("transfer-sent").textContent = sent;
+  $("transfer-remaining").textContent = remaining;
+  $("transfer-progress-text").textContent = `${percent}%`;
+  $("transfer-progress-count").textContent = `${sent} / ${total}`;
+  $("transfer-progress-bar").style.width = `${percent}%`;
+  renderTransferMap(snap);
+}
 
 function renderTransferFailure(transfer) {
   const sent = transfer?.sent_points ?? 0;
@@ -317,6 +381,12 @@ $("retry-push-btn").onclick = async () => {
 };
 $("new-journey-btn").onclick = () => { resetMap(); show("search"); };
 
+function startTransferPolling() {
+  if (transferTimer) return;
+  transferTimer = setInterval(refresh, 500);
+}
+function stopTransferPolling() { clearInterval(transferTimer); transferTimer = null; }
+
 /* ---------- state-driven render loop ---------- */
 
 let lastLegIdx = null;
@@ -328,6 +398,7 @@ async function refresh() {
 
   switch (snap.state) {
     case "awaiting_board":
+      stopTransferPolling();
       if (lastLegIdx !== snap.leg_idx) resetMap();  // transfer: new leg map
       lastLegIdx = snap.leg_idx;
       show("picker");
@@ -335,27 +406,43 @@ async function refresh() {
       startArrivalsPolling(snap);
       break;
     case "on_train":
+      stopTransferPolling();
       if (lastLegIdx !== snap.leg_idx) resetMap();
       lastLegIdx = snap.leg_idx;
       show("track");
       renderTrack(snap);
       startMapPolling();
       break;
-    case "completed":
+    case "pushing":
       show("done");
-      $("done-title").textContent = "🎉 여정 완료";
-      $("done-msg").textContent = `위치 ${snap.point_count}개를 Reitti로 전송했어요.`;
-      $("done-detail").textContent = "";
+      $("done-title").textContent = "Reitti로 데이터 전송 중";
+      $("done-msg").textContent = "도착 기록을 Reitti 서버로 안전하게 보내고 있어요.";
+      $("done-detail").textContent = "전송이 완료될 때까지 이 화면을 유지하세요.";
       $("done-technical-detail").textContent = "";
       $("retry-push-btn").classList.add("hidden");
+      renderTransfer(snap);
+      startTransferPolling();
+      break;
+    case "completed":
+      stopTransferPolling();
+      show("done");
+      $("done-title").textContent = "🎉 여정 완료";
+      $("done-msg").textContent = "전체 위치 기록을 Reitti로 전송했어요.";
+      $("done-detail").textContent = `총 ${snap.transfer?.total_points ?? snap.point_count}개 데이터 전송 완료`;
+      $("done-technical-detail").textContent = "";
+      $("retry-push-btn").classList.add("hidden");
+      renderTransfer(snap);
       break;
     case "push_failed":
+      stopTransferPolling();
       show("done");
       $("done-title").textContent = "⚠️ Reitti 전송 실패";
       renderTransferFailure(snap.transfer);
       $("retry-push-btn").classList.remove("hidden");
+      renderTransfer(snap);
       break;
     default:
+      stopTransferPolling();
       show("search");
   }
 }
