@@ -201,4 +201,18 @@ describe("JourneyApp", () => {
 
     expect(refresh).toHaveBeenCalledTimes(1);
   });
+
+  it("does not insert a loading message between dashboard cards during background refreshes", () => {
+    vi.mocked(useCurrentJourney).mockReturnValue({
+      snapshot: activeJourneySnapshot,
+      loading: true,
+      error: null,
+      refresh: vi.fn(),
+    });
+
+    render(<JourneyApp />);
+
+    expect(screen.queryByText("여정 상태를 불러오는 중이에요.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "실시간 여정 화면" })).toBeVisible();
+  });
 });

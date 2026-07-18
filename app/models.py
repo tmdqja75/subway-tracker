@@ -82,7 +82,7 @@ class TrackPoint(BaseModel):
 class TrainStatus(BaseModel):
     train_no: str
     station_name: str
-    station_index: int | None
+    station_index: int | None  # next station while status is "between"
     status: str  # approaching / arrived / departed / between / estimated / lost
     lat: float
     lon: float

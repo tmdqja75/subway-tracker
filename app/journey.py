@@ -368,7 +368,11 @@ class JourneyManager:
         j.last_status = TrainStatus(
             train_no=j.last_status.train_no,
             station_name=j.last_status.station_name,
-            station_index=j.last_status.station_index,
+            # A "between" position is interpreted by the client as travelling
+            # toward station_index. The old departure index made the first
+            # segment look like it started before the leg, so the map fell
+            # back to its coarse straight-line coordinate.
+            station_index=min(j.anchor_idx + 1, len(j.leg.stations) - 1),
             status="between",
             lat=lat,
             lon=lon,

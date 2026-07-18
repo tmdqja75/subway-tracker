@@ -61,7 +61,7 @@ export interface TrackPoint {
 export interface TrainStatus {
   train_no: string;
   station_name: string;
-  station_index: number | null;
+  station_index: number | null; // Next station while status is "between".
   status: string;
   lat: number;
   lon: number;

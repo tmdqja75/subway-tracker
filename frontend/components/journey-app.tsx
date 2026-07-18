@@ -49,7 +49,7 @@ function activeStateLabel(snapshot: Exclude<CurrentJourneyResponse, { state: "id
 export function JourneyApp() {
   const [routes, setRoutes] = useState<Itinerary[] | null>(null);
   const [startingNextJourney, setStartingNextJourney] = useState(false);
-  const { snapshot, loading, error, refresh } = useCurrentJourney();
+  const { snapshot, error, refresh } = useCurrentJourney();
   const isIdle = snapshot?.state === "idle";
   const isStartingNextJourneyFromCompleted = snapshot?.state === "completed" && startingNextJourney;
   const showsSearchFlow = isIdle || isStartingNextJourneyFromCompleted;
@@ -103,7 +103,6 @@ export function JourneyApp() {
           : "새로고침해도 백엔드의 현재 여정 상태를 기준으로 이어집니다."}
       </StatusBanner>
 
-      {loading ? <p className="journey-sync-message" role="status">여정 상태를 불러오는 중이에요.</p> : null}
       {error ? (
         <div className="journey-sync-error" role="alert">
           <p>{error}</p>

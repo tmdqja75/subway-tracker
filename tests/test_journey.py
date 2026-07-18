@@ -9,7 +9,7 @@ from app import journey as journey_mod
 from app.config import Settings
 from app.db import Database
 from app.journey import ActiveJourney, JourneyManager
-from app.models import Itinerary, JourneyState, LegStation, SubwayLeg, TrackPoint
+from app.models import Itinerary, JourneyState, LegStation, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
 
 
@@ -130,6 +130,28 @@ async def test_uncovered_line_uses_timer_mode(manager, monkeypatch):
         if j.state in (JourneyState.COMPLETED, JourneyState.PUSH_FAILED):
             break
     assert j.state == JourneyState.COMPLETED
+
+
+async def test_local_realtime_interpolation_reports_the_next_station_for_between_status(manager):
+    journey = await manager.start_journey(make_itinerary())
+    journey.anchor_idx = 0
+    journey.anchor_phase = "segment"
+    journey.anchor_time = 0
+    journey.last_status = TrainStatus(
+        train_no="3001",
+        station_name="양재",
+        station_index=0,
+        status="departed",
+        lat=journey.leg.stations[0].lat,
+        lon=journey.leg.stations[0].lon,
+        updated_at=0,
+    )
+
+    manager._local_realtime_update(journey, now=30)
+
+    assert journey.last_status is not None
+    assert journey.last_status.status == "between"
+    assert journey.last_status.station_index == 1
 
 
 async def test_failed_push_exposes_details_and_retry_resends_all_points(manager, monkeypatch):

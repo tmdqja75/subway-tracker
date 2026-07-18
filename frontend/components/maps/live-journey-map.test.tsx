@@ -123,6 +123,25 @@ describe("LiveJourneyMap", () => {
     })).toEqual([3, 4]);
   });
 
+  it("keeps a locally interpolated first-segment train on the curved Tmap path", () => {
+    const curvedLeg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
+      ...activeJourneySnapshot.leg,
+      stations: [
+        { index: 0, name: "출발", lat: 0, lon: 0 },
+        { index: 1, name: "도착", lat: 0, lon: 10 },
+      ],
+      shape: [[0, 0], [5, 5], [0, 10]] as Coordinate[],
+    };
+
+    expect(positionForLiveTrain(curvedLeg, {
+      ...activeJourneySnapshot.train!,
+      station_index: 0,
+      status: "between",
+      lat: 0,
+      lon: 5,
+    })).toEqual([5, 5]);
+  });
+
   it("renders the moving marker on the curved route point instead of its coarse straight-line coordinate", async () => {
     const curvedLeg: JourneyLegSnapshot = {
       ...activeJourneySnapshot.leg,
@@ -136,7 +155,7 @@ describe("LiveJourneyMap", () => {
       <LiveJourneyMap
         journeyLegKey="1:0"
         leg={curvedLeg}
-        train={{ ...activeJourneySnapshot.train!, station_index: 1, status: "between", lat: 0, lon: 5 }}
+        train={{ ...activeJourneySnapshot.train!, station_index: 0, status: "between", lat: 0, lon: 5 }}
       />,
     );
 

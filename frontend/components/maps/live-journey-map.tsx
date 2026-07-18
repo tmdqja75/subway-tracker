@@ -125,7 +125,10 @@ export function positionForLiveTrain(
   }
 
   const startStationIndex = train.status === "between"
-    ? train.station_index - 1
+    // Older local snapshots labelled a first-segment interpolation as
+    // "between" while retaining index 0. Clamp that legacy form to the
+    // first actual segment rather than reverting to the straight-line point.
+    ? Math.max(train.station_index - 1, 0)
     : train.status === "departed" || train.status === "estimated"
       ? train.station_index
       : null;
