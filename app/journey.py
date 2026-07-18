@@ -189,7 +189,7 @@ class JourneyManager:
         log.info("resumed journey %s in state %s", j.id, j.state)
 
     async def start_journey(self, itinerary: Itinerary) -> ActiveJourney:
-        if self.active:
+        if self.active and self.active.state != JourneyState.COMPLETED:
             await self.cancel()
         journey_id = self.db.create_journey(itinerary, JourneyState.AWAITING_BOARD)
         self.active = ActiveJourney(journey_id, itinerary)

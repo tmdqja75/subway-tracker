@@ -41,6 +41,38 @@ def manager(tmp_path: Path, monkeypatch):
     return JourneyManager(Database(settings.db_path), settings)
 
 
+async def test_starting_next_journey_keeps_completed_history_completed(manager):
+    completed = await manager.start_journey(make_itinerary())
+    completed.state = JourneyState.COMPLETED
+    manager.db.update_journey(completed.id, state=JourneyState.COMPLETED)
+
+    next_journey = await manager.start_journey(make_itinerary())
+
+    assert manager.db.get_journey(completed.id)["state"] == JourneyState.COMPLETED
+    assert next_journey.state == JourneyState.AWAITING_BOARD
+    assert manager.db.get_journey(next_journey.id)["state"] == JourneyState.AWAITING_BOARD
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        JourneyState.AWAITING_BOARD,
+        JourneyState.ON_TRAIN,
+        JourneyState.PUSHING,
+        JourneyState.PUSH_FAILED,
+    ],
+)
+async def test_starting_next_journey_cancels_existing_active_journey(manager, state):
+    existing = await manager.start_journey(make_itinerary())
+    existing.state = state
+    manager.db.update_journey(existing.id, state=state)
+
+    next_journey = await manager.start_journey(make_itinerary())
+
+    assert manager.db.get_journey(existing.id)["state"] == JourneyState.CANCELLED
+    assert next_journey.state == JourneyState.AWAITING_BOARD
+
+
 async def test_full_leg_completes_and_pushes(manager, monkeypatch):
     # scripted feed: train 3001 walks the leg then arrives at the end station
     feed = [

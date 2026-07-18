@@ -29,6 +29,11 @@ configure_logging()
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
+def mount_static(app: FastAPI, static_dir: Path = STATIC_DIR) -> None:
+    """Mount the static export after API routes so /api always has priority."""
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = app.state.settings
@@ -52,4 +57,4 @@ app = FastAPI(title="subway-tracker", lifespan=lifespan)
 app.state.settings = get_settings()
 app.state.observability = configure_observability(app, app.state.settings)
 app.include_router(router)
-app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+mount_static(app)

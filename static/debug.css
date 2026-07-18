@@ -6,57 +6,17 @@ header h1 { font-size: 18px; }
 .header-link { color: #fff; font-size: 13px; text-decoration: none; border: 1px solid rgba(255,255,255,.55);
   border-radius: 999px; padding: 6px 10px; }
 .view { padding: 16px; max-width: 560px; margin: 0 auto; }
-.hidden { display: none !important; }
 h2 { font-size: 17px; margin-bottom: 12px; }
 .sub { color: #666; font-size: 13px; margin-bottom: 10px; }
-.error { color: #c0392b; font-size: 14px; margin-top: 8px; }
-
-.field { position: relative; margin-bottom: 14px; }
-.field label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
-.field input { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 10px; }
-.suggest { position: absolute; z-index: 1000; left: 0; right: 0; background: #fff; border: 1px solid #ddd;
-  border-radius: 0 0 10px 10px; list-style: none; max-height: 220px; overflow-y: auto; }
-.suggest li { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 15px; }
-.suggest li span { color: #888; font-size: 12px; margin-left: 6px; }
 
 button { display: block; width: 100%; padding: 14px; font-size: 16px; border: none; border-radius: 12px;
   margin-top: 10px; cursor: pointer; }
-.primary { background: #1c3f94; color: #fff; }
 .secondary { background: #e3e6ee; color: #1c3f94; }
-.danger { background: #fdecea; color: #c0392b; }
 
 .card { background: #fff; border-radius: 14px; padding: 14px; margin-bottom: 10px;
   box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-.route-card { cursor: pointer; }
-.route-card .time { font-size: 18px; font-weight: 700; }
-.route-card .meta { color: #666; font-size: 13px; margin: 4px 0; }
-.route-card .legs { font-size: 14px; line-height: 1.6; }
 
-.train-card { cursor: pointer; }
-.train-card .no { font-weight: 700; }
-.train-card .eta { float: right; color: #1c3f94; font-weight: 700; }
-.train-card .dir { color: #666; font-size: 13px; }
-.train-card.dim { opacity: .45; }
-.badge { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 6px;
-  background: #ffe9d6; color: #c05600; margin-left: 6px; }
-
-#map { height: 46vh; border-radius: 14px; margin-bottom: 10px; }
-#transfer-map { height: 38vh; border-radius: 14px; margin-bottom: 10px; }
 #debug-map { height: 62vh; border-radius: 14px; margin-bottom: 10px; }
-.subway-position-marker { background: transparent; border: 0; font-size: 28px; line-height: 32px;
-  text-align: center; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
-#track-leg { font-weight: 700; margin-bottom: 4px; }
-#track-status { font-size: 14px; }
-.btn-row button { margin-top: 8px; }
-
-.transfer-card { margin-top: 14px; }
-.transfer-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.transfer-stats div { background: #f4f6fb; border-radius: 10px; padding: 10px 8px; text-align: center; }
-.transfer-stats span { display: block; color: #666; font-size: 12px; }
-.transfer-stats strong { display: block; color: #1c3f94; font-size: 20px; margin-top: 3px; }
-.transfer-progress-label { display: flex; justify-content: space-between; margin: 14px 0 6px; color: #555; font-size: 13px; }
-.transfer-progress { height: 10px; overflow: hidden; background: #e3e6ee; border-radius: 999px; }
-.transfer-progress-bar { width: 0; height: 100%; border-radius: inherit; background: #1c3f94; transition: width .2s ease; }
 
 .debug-view { max-width: 960px; }
 .debug-controls { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
@@ -88,5 +48,4 @@ button { display: block; width: 100%; padding: 14px; font-size: 16px; border: no
   .debug-controls { grid-template-columns: 1fr; }
   .debug-controls button { width: 100%; }
   #debug-map { height: 56vh; }
-  #transfer-map { height: 34vh; }
 }

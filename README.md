@@ -5,8 +5,8 @@ logs your position along the ride (interpolated between stations) and pushes
 the trace to your [Reitti](https://www.dedicatedcode.com/projects/reitti/)
 instance when you arrive.
 
-Single-user, single process: FastAPI + SQLite + a vanilla-JS/Leaflet mobile
-frontend served from the same app.
+Single-user, single process: FastAPI + SQLite + a statically exported Next.js mobile
+frontend served from the same app in production.
 
 ## Data sources
 
@@ -28,31 +28,112 @@ frontend served from the same app.
 2. **Keys**: `cp .env.example .env` and fill in `TMAP_APP_KEY`,
    `SEOUL_API_KEY`, optional fallback `SEOUL_API_KEY_TWO`, `REITTI_URL`,
    `REITTI_TOKEN`.
-3. **Run**:
+3. **Run the development servers**:
 
 ```bash
+# Terminal 1: FastAPI API
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8081
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Terminal 2: Next.js rider UI (proxies /api requests to FastAPI during development)
+cd frontend
+npm ci
+npm run dev
 ```
 
-Open `http://<server>:8081` on your phone. If the shared Grafana LGTM container
-is running on this machine, copy the OpenTelemetry variables from `.env.example`
-to `.env` to export telemetry from a native run.
+Open `http://127.0.0.1:3000` for the rider UI. In native development, FastAPI
+at `http://127.0.0.1:8000` provides `/api/*` and `/debug.html`; use the Next.js
+server for the rider UI rather than its root. Only the production Docker image
+builds the rider static export and serves it at `/`.
+If the shared Grafana LGTM container is running on this machine, copy the
+OpenTelemetry variables from `.env.example` to `.env` to export telemetry from
+a native run.
 
-### Tests
+### Tests and frontend build
 
 ```bash
 uv run pytest
+
+cd frontend
+npm ci
+npm test
+npm run typecheck
+npm run build
 ```
 
 Outbound HTTP (Tmap/Seoul/Reitti) is mocked with `respx`; no real network or
-keys needed to run tests.
+keys are needed to run Python tests.
+
+## Production deployment
+
+The production image builds the Next.js static export and serves it from the
+same FastAPI process as `/api/*`. This provides a single origin: the rider UI
+is at `/`, generated `/_next/...` assets are served by FastAPI, and browser API
+requests use the same origin without a separate Next production server.
+
+### Docker Compose (recommended)
+
+Compose keeps runtime data in `./data/`, publishes the application on port
+`8081`, and rebuilds the frontend as part of the image build.
+
+```bash
+cp .env.example .env
+# Edit .env with Tmap, Seoul, and Reitti credentials. Do not commit it.
+
+docker compose config
+docker compose up -d --build --remove-orphans
+docker compose ps
+docker compose logs --tail=100 app
+```
+
+Verify the deployed service from the host:
+
+```bash
+curl -f http://127.0.0.1:8081/
+curl -f http://127.0.0.1:8081/debug.html
+curl -f 'http://127.0.0.1:8081/api/stations/search?q=강'
+```
+
+The rider UI is at `http://<server>:8081/` and the retained diagnostic page
+is at `http://<server>:8081/debug.html`. The Compose port is published on all
+host interfaces; put the service behind an HTTPS reverse proxy or bind it to
+`127.0.0.1` before exposing it publicly.
+
+To deploy an update, pull the intended revision and rebuild the service. The
+`./data` bind mount preserves the station CSV and SQLite database.
+
+```bash
+git pull --ff-only
+docker compose config
+docker compose up -d --build --remove-orphans
+docker compose ps
+```
+
+Back up `data/tracker.db` before major upgrades. Do not use `docker compose
+down -v` unless intentionally discarding persistent Docker volumes.
+
+### Direct Docker run
+
+For a one-container deployment, mount `data/` explicitly so the database
+survives container replacement:
+
+```bash
+docker build -t subway-tracker:next-ui .
+docker run --rm -p 8000:8000 --env-file .env \
+  -v "$PWD/data:/app/data" \
+  -e DB_PATH=/app/data/tracker.db -e STATIONS_CSV=/app/data/stations.csv \
+  subway-tracker:next-ui
+```
+
+Use a process manager or `--restart unless-stopped` instead of `--rm` for a
+long-lived direct deployment.
 
 ## Debug view
 
-`http://<server>:8000/debug.html` lists recent journeys with route geometry,
-logged points on a Leaflet map, and a horizontal timeline — useful for
-checking interpolation/logging behavior without re-riding a train.
+`http://<server>:8000/debug.html` (or `http://localhost:8081/debug.html` when
+using Compose) lists recent journeys with route geometry, logged points on a
+Leaflet map, and a horizontal timeline — useful for checking interpolation/
+logging behavior without re-riding a train.
 
 ## Docker + shared Grafana LGTM
 
@@ -62,11 +143,7 @@ Grafana LGTM stack over OTLP/HTTP; it does not start separate Loki, Promtail,
 or Grafana containers.
 
 1. Copy `.env.example` to `.env` and fill in the API keys as described above.
-2. Start the stack:
-
-```bash
-docker compose up --build -d
-```
+2. Start and verify the stack using [Docker Compose (recommended)](#docker-compose-recommended).
 
 The Docker default for `OTEL_EXPORTER_OTLP_ENDPOINT` is
 `http://host.docker.internal:4318`, which reaches the host's shared LGTM
@@ -110,6 +187,11 @@ persist outside the container.
   fall back to time-based estimation using Tmap's leg travel time.
 - Journey state lives in SQLite; the server resumes tracking after a restart,
   and the frontend resumes whatever state the server reports on reload.
+- Once a journey's trace has been fully delivered, its completion dashboard
+  offers **"새 여정 시작하기"**. This returns the rider to the first
+  departure/destination search screen. Starting the next route preserves the
+  completed journey record for the debug history instead of marking it
+  cancelled.
 
 ## Notes / limitations
 
