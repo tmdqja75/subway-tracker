@@ -10,6 +10,16 @@ export interface Station {
   lon: number;
 }
 
+export interface RouteHistoryItem {
+  start: Station;
+  end: Station;
+}
+
+export interface RouteHistoryResponse {
+  most_used: RouteHistoryItem[];
+  recent: RouteHistoryItem[];
+}
+
 export interface LegStation {
   index: number;
   name: string;

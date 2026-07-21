@@ -40,7 +40,7 @@ and users, and keep AGENTS.md accurate for future coding agents.
 ```
 app/
   main.py      FastAPI app, lifespan (loads stations, opens db, resumes journey)
-  api.py       all HTTP routes, prefix /api
+  api.py       all HTTP routes, prefix /api (including SQLite-backed route history)
   journey.py   state machine + background tracking loop (the core logic)
   db.py        sqlite3 persistence, sync, short transactions
   models.py    pydantic models shared by api/journey/db
@@ -113,6 +113,18 @@ path. `db.add_point` dedups by `(journey_id, ts)`, so re-emitting is safe.
 
 Manual overrides in `api.py` bypass tracking: alight (force leg complete),
 missed_train (back to picker, journey kept), cancel.
+
+## Route-history chooser
+
+The initial rider search view calls `GET /api/routes/history`. It returns
+`most_used` and `recent` arrays of resolved `Station` pairs, each capped at
+five. `Database` derives the route key from the persisted itinerary's first
+leg start and final leg end, including their line keys: most-used groups all
+journeys by that key, while recent keeps the latest distinct keys. The API
+resolves those saved name/line pairs through `StationRegistry` so the frontend
+receives exact station IDs and can prefill both autocomplete selections without
+losing an interchange's selected line. Malformed historical itineraries or
+unresolvable station pairs are skipped safely.
 
 ## Data sources / external APIs
 

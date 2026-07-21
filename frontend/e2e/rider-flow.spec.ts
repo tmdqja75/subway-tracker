@@ -72,6 +72,26 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
+test("saved route history is side by side and fills exact station choices", async ({ page }) => {
+  const state = createMockApiState({ current: { state: "idle" } });
+  await openWithState(page, state);
+
+  const mostUsed = page.getByRole("region", { name: "Most Used Route" });
+  const recent = page.getByRole("region", { name: "Recent Route" });
+  await expect(mostUsed).toBeVisible();
+  await expect(recent).toBeVisible();
+  await expect.poll(() => state.routeHistoryRequests).toBe(1);
+  const savedRoute = mostUsed.getByRole("button", { name: "강남 (2호선) → 홍대입구 (2호선)" });
+  await expectNativeTouchTarget(savedRoute);
+  await savedRoute.click();
+
+  await expect(page.getByRole("combobox", { name: "출발역" })).toHaveValue("강남");
+  await expect(page.getByRole("combobox", { name: "도착역" })).toHaveValue("홍대입구");
+  await expect(page.getByText("선택됨: 강남 · 2호선")).toHaveAttribute("role", "status");
+  await expect(page.getByText("선택됨: 홍대입구 · 2호선")).toHaveAttribute("role", "status");
+  await expectNoHorizontalOverflow(page);
+});
+
 test("rider selects exact stations, starts a returned route, then boards only a direction-safe train", async ({ page }) => {
   const state = createMockApiState({ current: { state: "idle" } });
   await openWithState(page, state);

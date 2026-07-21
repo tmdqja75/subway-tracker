@@ -5,6 +5,7 @@ import type {
   Itinerary,
   JourneyStartedResponse,
   OkResponse,
+  RouteHistoryResponse,
   RouteSearchRequest,
   StartJourneyRequest,
   Station,
@@ -106,6 +107,10 @@ export function searchRoutes(
   signal?: AbortSignal,
 ): Promise<Itinerary[]> {
   return requestJson<Itinerary[]>("/api/routes", { method: "POST", body: request, signal });
+}
+
+export function getRouteHistory(signal?: AbortSignal): Promise<RouteHistoryResponse> {
+  return requestJson<RouteHistoryResponse>("/api/routes/history", { method: "GET", signal });
 }
 
 export function startJourney(

@@ -187,6 +187,10 @@ persist outside the container.
   fall back to time-based estimation using Tmap's leg travel time.
 - Journey state lives in SQLite; the server resumes tracking after a restart,
   and the frontend resumes whatever state the server reports on reload.
+- The first route-search screen also reads SQLite-backed saved routes. It
+  shows up to five **Most Used Route** choices (frequency-ranked) and five
+  distinct **Recent Route** choices (newest first). Selecting one restores
+  both stations and their saved line-specific station IDs before searching.
 - Once a journey's trace has been fully delivered, its completion dashboard
   offers **"새 여정 시작하기"**. This returns the rider to the first
   departure/destination search screen. Starting the next route preserves the

@@ -3,6 +3,7 @@ import type {
   ArrivingTrain,
   CurrentJourneyResponse,
   Itinerary,
+  RouteHistoryResponse,
   Station,
 } from "../lib/types";
 import type { Page, Route } from "@playwright/test";
@@ -44,6 +45,11 @@ const completedTrip = {
 const stationSearchResults: Record<string, Station[]> = {
   "강남": [originStation],
   "홍대": [destinationStation],
+};
+
+export const routeHistory: RouteHistoryResponse = {
+  most_used: [{ start: originStation, end: destinationStation }],
+  recent: [{ start: destinationStation, end: originStation }],
 };
 
 const transparentPng = Buffer.from(
@@ -225,6 +231,7 @@ export type MockApiState = {
   retryMethods: string[];
   retryPayloads: Array<string | null>;
   retryRequests: number;
+  routeHistoryRequests: number;
   routeRequests: unknown[];
   stationSearchRequests: Array<{ method: string; q: string }>;
   startRequests: unknown[];
@@ -240,6 +247,7 @@ export function createMockApiState({ current }: { current: CurrentJourneyRespons
     retryMethods: [],
     retryPayloads: [],
     retryRequests: 0,
+    routeHistoryRequests: 0,
     routeRequests: [],
     stationSearchRequests: [],
     startRequests: [],
@@ -296,6 +304,11 @@ export async function installMockBackend(page: Page, state: MockApiState) {
         return;
       }
       await json(route, results);
+      return;
+    }
+    if (request.method() === "GET" && pathname === "/api/routes/history") {
+      state.routeHistoryRequests += 1;
+      await json(route, routeHistory);
       return;
     }
     if (request.method() === "POST" && pathname === "/api/routes") {

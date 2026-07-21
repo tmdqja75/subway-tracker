@@ -20,6 +20,16 @@ class Station(BaseModel):
     lon: float
 
 
+class RouteHistoryItem(BaseModel):
+    start: Station
+    end: Station
+
+
+class RouteHistoryResponse(BaseModel):
+    most_used: list[RouteHistoryItem]
+    recent: list[RouteHistoryItem]
+
+
 class LegStation(BaseModel):
     """A station on a subway leg's pass-stop list (coords from Tmap)."""
 

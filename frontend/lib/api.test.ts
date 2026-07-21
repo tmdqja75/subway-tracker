@@ -8,6 +8,7 @@ import {
   getCurrentArrivals,
   getCurrentJourney,
   getCurrentJourneyPoints,
+  getRouteHistory,
   markCurrentJourneyMissed,
   retryCurrentJourneyPush,
   searchRoutes,
@@ -18,6 +19,7 @@ import type {
   ApiErrorResponse,
   BoardJourneyRequest,
   JourneyStartedResponse,
+  RouteHistoryResponse,
   RouteSearchRequest,
   StartJourneyRequest,
 } from "./types";
@@ -165,6 +167,27 @@ describe("rider API client", () => {
     );
   });
 
+  it("gets typed route history with the canonical read request init", async () => {
+    const history = {
+      most_used: [{ start: station, end: { ...station, station_id: "0223", name: "역삼" } }],
+      recent: [],
+    } satisfies RouteHistoryResponse;
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(history));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await expect(getRouteHistory(controller.signal)).resolves.toEqual(history);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/routes/history",
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+  });
+
   it("calls every rider endpoint with its complete RequestInit contract", async () => {
     const startedResponse = {
       journey_id: 1,
@@ -195,6 +218,7 @@ describe("rider API client", () => {
         method: "GET",
       },
       { path: "/api/routes", call: () => searchRoutes(routeRequest), method: "POST", body: routeRequest },
+      { path: "/api/routes/history", call: () => getRouteHistory(), method: "GET" },
       { path: "/api/journeys", call: () => startJourney(startRequest), method: "POST", body: startRequest },
       { path: "/api/journeys/current", call: () => getCurrentJourney(), method: "GET" },
       { path: "/api/journeys/current/arrivals", call: () => getCurrentArrivals(), method: "GET" },

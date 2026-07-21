@@ -341,6 +341,74 @@ h2 {
   gap: 12px;
 }
 
+.route-history {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.route-history__section {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d9e4ef;
+  border-radius: 14px;
+  background: #fbfdff;
+}
+
+.route-history__heading {
+  margin: 0 0 9px;
+  color: #203b5a;
+  font-size: 0.75rem;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.route-history__list {
+  display: grid;
+  gap: 7px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.route-history__item,
+.route-history__message {
+  min-width: 0;
+}
+
+.route-history__button {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid #cbd8e6;
+  border-radius: 10px;
+  background: #fff;
+  color: #183f70;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.route-history__button:hover:not(:disabled) {
+  border-color: #9cbde0;
+  background: #edf4fc;
+}
+
+.route-history__button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.route-history__message {
+  color: #526477;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 .station-autocomplete {
   position: relative;
   gap: 6px;

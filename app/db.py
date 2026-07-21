@@ -133,6 +133,83 @@ class Database:
     def load_itinerary(self, row: sqlite3.Row) -> Itinerary:
         return Itinerary.model_validate(json.loads(row["itinerary_json"]))
 
+    def route_history(self) -> tuple[
+        list[tuple[str, str, str, str]], list[tuple[str, str, str, str]]
+    ]:
+        """Return the most-used and most-recent distinct persisted subway routes.
+
+        Itinerary JSON is historical data and may predate current validation, so
+        malformed rows are ignored rather than making the history endpoint fail.
+        """
+        groups: dict[tuple[str, str, str, str], dict[str, int]] = {}
+        rows = self.conn.execute(
+            "SELECT id, created_at, itinerary_json FROM journeys"
+        ).fetchall()
+        for row in rows:
+            try:
+                itinerary = json.loads(row["itinerary_json"])
+                legs = itinerary["legs"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if not isinstance(legs, list):
+                continue
+            created_at, journey_id = row["created_at"], row["id"]
+            if type(created_at) is not int or type(journey_id) is not int:
+                continue
+
+            # Tmap persists every trackable transit mode as a SubwayLeg. A
+            # non-empty line_key is the durable marker for an actual subway leg.
+            subway_legs = [
+                leg
+                for leg in legs
+                if isinstance(leg, dict)
+                and isinstance(leg.get("line_key"), str)
+                and leg["line_key"].strip()
+            ]
+            if not subway_legs:
+                continue
+            first, last = subway_legs[0], subway_legs[-1]
+            start_name, start_line = first.get("start_name"), first.get("line_key")
+            end_name, end_line = last.get("end_name"), last.get("line_key")
+            if not (
+                isinstance(start_name, str)
+                and start_name.strip()
+                and isinstance(start_line, str)
+                and start_line.strip()
+                and isinstance(end_name, str)
+                and end_name.strip()
+                and isinstance(end_line, str)
+                and end_line.strip()
+            ):
+                continue
+
+            route = (start_name, start_line, end_name, end_line)
+            used_at = (created_at, journey_id)
+            group = groups.setdefault(
+                route,
+                {"count": 0, "latest_created_at": created_at, "latest_id": journey_id},
+            )
+            group["count"] += 1
+            if used_at > (group["latest_created_at"], group["latest_id"]):
+                group["latest_created_at"], group["latest_id"] = used_at
+
+        ranked = sorted(
+            groups.items(),
+            key=lambda item: (
+                -item[1]["count"],
+                -item[1]["latest_created_at"],
+                -item[1]["latest_id"],
+            ),
+        )
+        recent = sorted(
+            groups.items(),
+            key=lambda item: (-item[1]["latest_created_at"], -item[1]["latest_id"]),
+        )
+        return (
+            [route for route, _ in ranked],
+            [route for route, _ in recent],
+        )
+
     def get_cached_route_options(
         self,
         start_name: str,

@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from .models import Itinerary
+from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
 from .seoul import SeoulApiError, fetch_arrivals
 from .stations import normalize_name
 from .tmap import TmapError, search_routes_with_raw_response
@@ -97,6 +97,25 @@ async def routes(request: Request, body: RouteSearchRequest):
         raw_tmap_response=route_search.raw_response_json,
     )
     return [it.model_dump() for it in itineraries]
+
+
+@router.get("/routes/history", response_model=RouteHistoryResponse)
+async def route_history(request: Request):
+    registry = request.app.state.stations
+    most_used, recent = request.app.state.manager.db.route_history()
+
+    def resolve(routes: list[tuple[str, str, str, str]]) -> list[RouteHistoryItem]:
+        items = []
+        for start_name, start_line, end_name, end_line in routes:
+            start = registry.find(start_name, start_line)
+            end = registry.find(end_name, end_line)
+            if start is not None and end is not None:
+                items.append(RouteHistoryItem(start=start, end=end))
+            if len(items) == 5:
+                break
+        return items
+
+    return RouteHistoryResponse(most_used=resolve(most_used), recent=resolve(recent))
 
 
 @router.post("/journeys")

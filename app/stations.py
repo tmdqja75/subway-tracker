@@ -12,6 +12,11 @@ from pathlib import Path
 from .models import Station
 
 _PAREN = re.compile(r"\(.*?\)")
+_DISPLAY_LINE_BY_RAW = {
+    # The station master calls this 1호선 segment "경원선"; rider-facing route
+    # choices should use the same numbered line label as Tmap/Seoul APIs.
+    "경원선": "1호선",
+}
 
 
 def normalize_name(name: str) -> str:
@@ -45,7 +50,9 @@ class StationRegistry:
                         Station(
                             station_id=row["역사_ID"].strip(),
                             name=row["역사명"].strip(),
-                            line=row["호선"].strip(),
+                            line=_DISPLAY_LINE_BY_RAW.get(
+                                row["호선"].strip(), row["호선"].strip()
+                            ),
                             lat=float(row["위도"]),
                             lon=float(row["경도"]),
                         )
