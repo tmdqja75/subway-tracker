@@ -137,11 +137,12 @@ export function getCurrentArrivals(signal?: AbortSignal): Promise<CurrentArrival
 
 export function boardCurrentJourney(
   trainNo: BoardJourneyRequest["train_no"],
+  retroactive: BoardJourneyRequest["retroactive"],
   signal?: AbortSignal,
 ): Promise<OkResponse> {
   return requestJson<OkResponse>("/api/journeys/current/board", {
     method: "POST",
-    body: { train_no: trainNo },
+    body: { train_no: trainNo, retroactive },
     signal,
   });
 }

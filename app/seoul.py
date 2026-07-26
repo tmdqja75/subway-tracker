@@ -6,13 +6,16 @@ Same API key works for both. Arrival btrainNo matches position trainNo.
 """
 
 import logging
+import math
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
-from .lines import LINE_TO_SUBWAY_ID
-from .models import ArrivingTrain
+from .lines import LINE_TO_SUBWAY_ID, tmap_route_to_line_key
+from .models import ArrivingTrain, OnboardTrain, SubwayLeg
 from .stations import normalize_name
 
 log = logging.getLogger(__name__)
@@ -26,6 +29,7 @@ ARVL_CD_HERE = {"0", "1"}
 ARVL_CD_DEPARTED = "2"
 ARVL_CD_ONE_AWAY = {"3", "4", "5"}
 BRACKET_COUNT = re.compile(r"\[(\d+)\]")
+SEOUL_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 RATE_LIMIT_CODES = {"ERROR-337", "HTTP-429"}
 
@@ -158,6 +162,136 @@ async def fetch_positions(api_key: str, line_key: str, fallback_api_key: str = "
     return trains
 
 
+def _position_observed_at(value: object, *, now: int | float) -> int:
+    """Convert Seoul's reception timestamp to Unix seconds without reading a clock.
+
+    The position feed normally uses ``YYYY-MM-DD HH:MM:SS`` in Seoul local
+    time, but accepts ISO timestamps and numeric Unix seconds/milliseconds to
+    remain usable with recorded and proxy-normalized payloads.  The caller
+    supplies the fallback so candidate selection stays deterministic and pure.
+    """
+    fallback = int(now)
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return fallback
+        numeric = int(value)
+        return numeric // 1_000 if numeric >= 1_000_000_000_000 else numeric
+
+    text = str(value).strip()
+    if not text:
+        return fallback
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y%m%d%H%M%S"):
+        try:
+            return int(datetime.strptime(text, pattern).replace(tzinfo=SEOUL_TIMEZONE).timestamp())
+        except ValueError:
+            pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=SEOUL_TIMEZONE)
+        return int(parsed.timestamp())
+    except ValueError:
+        pass
+    try:
+        numeric = int(text)
+    except ValueError:
+        return fallback
+    return numeric // 1_000 if numeric >= 1_000_000_000_000 else numeric
+
+
+def find_onboard_trains(
+    positions: list[dict],
+    leg: SubwayLeg,
+    *,
+    now: int | float,
+) -> list[OnboardTrain]:
+    """Select verified trains already travelling between a leg's endpoints.
+
+    ``statnNm`` is a station for statuses 0/1/2 and the *next* station for
+    status 3.  The latter is retained as ``station_index`` to match the live
+    tracking model, while its active location is evaluated on the preceding
+    station-to-station segment.
+    """
+    if not leg.line_key or len(leg.stations) < 2:
+        return []
+
+    station_names = [normalize_name(station.name) for station in leg.stations]
+    last_index = len(station_names) - 1
+    expected_subway_id = LINE_TO_SUBWAY_ID.get(leg.line_key)
+    if expected_subway_id is None:
+        # A line without a known Seoul realtime mapping cannot be verified
+        # against this feed, so do not surface a potentially wrong train.
+        return []
+    candidates: list[OnboardTrain] = []
+
+    for position in positions:
+        train_no = str(position.get("trainNo") or "").strip()
+        station_name = str(position.get("statnNm") or "").strip()
+        terminus = str(position.get("statnTnm") or "").strip()
+        raw_status = position.get("trainSttus")
+        status_code = str(raw_status).strip() if raw_status is not None else ""
+        if not train_no or not station_name or not terminus or status_code not in {"0", "1", "2", "3"}:
+            continue
+
+        subway_id = str(position.get("subwayId") or "").strip()
+        line_name = str(position.get("subwayNm") or "").strip()
+        if subway_id:
+            if subway_id != expected_subway_id:
+                continue
+        elif tmap_route_to_line_key(line_name) != leg.line_key:
+            # Without numeric evidence, accept only a known spelling that
+            # resolves to this leg's normalized Seoul line key.
+            continue
+
+        normalized_station = normalize_name(station_name)
+        normalized_terminus = normalize_name(terminus)
+        if normalized_station not in station_names:
+            continue
+        station_index = station_names.index(normalized_station)
+        if normalized_terminus not in station_names:
+            continue
+        terminus_index = station_names.index(normalized_terminus)
+
+        if status_code == "0":
+            status, active_location = "approaching", float(station_index)
+        elif status_code == "1":
+            status, active_location = "arrived", float(station_index)
+        elif status_code == "2":
+            status, active_location = "departed", station_index + 0.5
+        else:  # 3: departed the previous station, travelling to statnNm
+            status, active_location = "between", station_index - 0.5
+
+        # A terminal ahead of the active location is the only direction
+        # evidence in realtimePosition. Do not infer a direction from updnLine
+        # or station order when the terminal cannot be reconciled with this leg.
+        matches_direction = terminus_index > active_location
+        if not matches_direction:
+            continue
+        if not 0 < active_location < last_index:
+            continue
+
+        candidates.append(
+            OnboardTrain(
+                train_no=train_no,
+                line_name=line_name or leg.line_key,
+                terminus=terminus,
+                direction_label=f"{terminus} 방면",
+                station_name=station_name,
+                station_index=station_index,
+                status=status,
+                observed_at=_position_observed_at(position.get("recptnDt"), now=now),
+                matches_direction=True,
+                is_express=(
+                    str(position.get("directAt") or "") == "1"
+                    or str(position.get("btrainSttus") or "") == "급행"
+                ),
+            )
+        )
+    return candidates
+
+
 async def fetch_arrivals(
     api_key: str,
     station_name: str,
@@ -167,6 +301,7 @@ async def fetch_arrivals(
     *,
     fallback_api_key: str = "",
     avg_seconds_per_station: float | None = None,
+    alt_station_name: str | None = None,
 ) -> list[ArrivingTrain]:
     """Trains approaching a station on a given line, closest first.
 
@@ -180,6 +315,15 @@ async def fetch_arrivals(
     (barvlDt) with no station count at all -- for those, `avg_seconds_per_station`
     (typically this leg's own scheduled time-per-station) is used to derive an
     estimated count instead, so the UI never has to fall back to showing a time.
+
+    `realtimeStationArrival` matches on Seoul's own exact station display
+    name, which is inconsistent about parenthetical disambiguators -- some
+    stations (e.g. "광나루(장신대)") only return results with the suffix
+    included, others (e.g. "왕십리") only return results *without* one, even
+    though normalize_name() strips it for cross-source matching everywhere
+    else. When the normalized query comes back empty, retry once with
+    `alt_station_name` (typically the station registry's raw CSV name) before
+    giving up, so the picker doesn't stay empty forever for these stations.
     """
     query_name = normalize_name(station_name)
     context = f"fetch_arrivals station={query_name}"
@@ -191,6 +335,18 @@ async def fetch_arrivals(
         context,
         {"station": query_name, "line": line_key},
     )
+    if not data.get("realtimeArrivalList") and alt_station_name and alt_station_name != query_name:
+        alt_context = f"fetch_arrivals station={alt_station_name} (alt)"
+        alt_data = await _fetch_json_with_key_rotation(
+            api_key,
+            fallback_api_key,
+            "realtimeStationArrival",
+            f"realtimeStationArrival/0/30/{alt_station_name}",
+            alt_context,
+            {"station": alt_station_name, "line": line_key},
+        )
+        if alt_data.get("realtimeArrivalList"):
+            data = alt_data
 
     subway_id = LINE_TO_SUBWAY_ID.get(line_key)
     upcoming = {normalize_name(n) for n in upcoming_stations}

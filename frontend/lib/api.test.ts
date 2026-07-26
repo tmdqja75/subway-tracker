@@ -200,7 +200,7 @@ describe("rider API client", () => {
       end_id: null,
     };
     const startRequest: StartJourneyRequest = { itinerary };
-    const requestWithoutTrain: BoardJourneyRequest = {};
+    const timerBoardRequest: BoardJourneyRequest = { train_no: null, retroactive: false };
     const fetchMock = vi
       .fn()
       .mockImplementation((path: string) => jsonResponse(path === "/api/journeys" ? startedResponse : { ok: true }));
@@ -224,9 +224,9 @@ describe("rider API client", () => {
       { path: "/api/journeys/current/arrivals", call: () => getCurrentArrivals(), method: "GET" },
       {
         path: "/api/journeys/current/board",
-        call: () => boardCurrentJourney(null),
+        call: () => boardCurrentJourney(null, false),
         method: "POST",
-        body: { train_no: null },
+        body: { train_no: null, retroactive: false },
       },
       { path: "/api/journeys/current/alight", call: () => alightCurrentJourney(), method: "POST" },
       { path: "/api/journeys/current/missed", call: () => markCurrentJourneyMissed(), method: "POST" },
@@ -254,7 +254,23 @@ describe("rider API client", () => {
       };
       expect(fetchMock.mock.calls[index]).toEqual([endpoint.path, expectedInit]);
     });
-    expect(requestWithoutTrain).toEqual({});
+    expect(timerBoardRequest).toEqual({ train_no: null, retroactive: false });
+  });
+
+  it("sends the retroactive choice and forwards cancellation for boarding", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(boardCurrentJourney("2221", true, controller.signal)).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/journeys/current/board",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ train_no: "2221", retroactive: true }),
+        signal: controller.signal,
+      }),
+    );
   });
 
   it("models both text and FastAPI validation-list error details", () => {

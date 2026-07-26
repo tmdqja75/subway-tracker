@@ -61,6 +61,21 @@ export interface ArrivingTrain {
   is_express: boolean;
 }
 
+export type OnboardTrainStatus = "approaching" | "arrived" | "departed" | "between";
+
+export interface OnboardTrain {
+  train_no: string;
+  line_name: string;
+  terminus: string;
+  direction_label: string;
+  station_name: string;
+  station_index: number;
+  status: OnboardTrainStatus;
+  observed_at: number;
+  matches_direction: boolean;
+  is_express: boolean;
+}
+
 export interface TrackPoint {
   lat: number;
   lon: number;
@@ -138,6 +153,7 @@ interface ActiveJourneySnapshotBase {
   summary: string[];
   train: TrainStatus | null;
   tracking_mode: TrackingMode | null;
+  history_estimated: boolean;
   point_count: number;
   error: string | null;
   trip: JourneyTrip;
@@ -168,7 +184,8 @@ export interface StartJourneyRequest {
 }
 
 export interface BoardJourneyRequest {
-  train_no?: string | null;
+  train_no: string | null;
+  retroactive: boolean;
 }
 
 export interface JourneyStartedResponse {
@@ -179,6 +196,7 @@ export interface JourneyStartedResponse {
 export interface CurrentArrivalsResponse {
   covered: boolean;
   trains: ArrivingTrain[];
+  already_onboard: OnboardTrain[];
 }
 
 export interface OkResponse {

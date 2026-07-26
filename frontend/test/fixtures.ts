@@ -95,6 +95,7 @@ export const activeJourneySnapshot = {
   summary: itinerary.summary,
   train: trainStatus,
   tracking_mode: "realtime",
+  history_estimated: false,
   point_count: 1,
   error: null,
   transfer: null,
@@ -131,4 +132,5 @@ export const pushFailedJourneySnapshot = {
 export const arrivalsResponse: CurrentArrivalsResponse = {
   covered: true,
   trains: [arrivingTrain],
+  already_onboard: [],
 };

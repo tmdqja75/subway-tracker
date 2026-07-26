@@ -119,6 +119,7 @@ function baseJourney() {
     summary: itineraries[0].summary,
     train: null,
     tracking_mode: null,
+    history_estimated: false,
     point_count: 0,
     error: null,
     trip: completedTrip,
@@ -224,7 +225,7 @@ const arrivals: ArrivingTrain[] = [
 
 export type MockApiState = {
   arrivalsRequests: number;
-  boardRequests: Array<{ train_no: string | null }>;
+  boardRequests: Array<{ train_no: string | null; retroactive: boolean }>;
   current: CurrentJourneyResponse;
   fulfilledOpenStreetMapTileRequests: Array<{ hostname: string; method: string; url: string }>;
   itineraries: Itinerary[];
@@ -324,7 +325,7 @@ export async function installMockBackend(page: Page, state: MockApiState) {
     }
     if (request.method() === "GET" && pathname === "/api/journeys/current/arrivals") {
       state.arrivalsRequests += 1;
-      await json(route, { covered: true, trains: arrivals });
+      await json(route, { covered: true, trains: arrivals, already_onboard: [] });
       return;
     }
     if (request.method() === "POST" && pathname === "/api/journeys/current/board") {

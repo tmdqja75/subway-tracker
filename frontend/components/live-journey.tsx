@@ -133,6 +133,11 @@ export function LiveJourney({ journey, onJourneyRefresh }: LiveJourneyProps) {
         <p className="live-journey__route">{journey.leg.start} → {journey.leg.end}</p>
         <p className="live-journey__train">{trainCopy(journey.train)}</p>
         <p>{trackingCopy(journey.tracking_mode)}</p>
+        {journey.history_estimated ? (
+          <p aria-label="추정 기록 안내" className="live-journey__history-notice" role="status">
+            이전 이동 기록은 재구성한 추정치이며, 현재 추적은 실시간입니다.
+          </p>
+        ) : null}
         <p className="live-journey__points">기록된 위치 {journey.point_count}개</p>
       </div>
 

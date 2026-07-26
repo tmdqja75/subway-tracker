@@ -134,9 +134,10 @@ test("rider selects exact stations, starts a returned route, then boards only a 
   await expectNativeTouchTarget(train);
   await expect(train).toContainText("진입");
   await expect(page.getByRole("button", { name: /2208 열차/ })).toHaveCount(0);
+  await expectNativeTouchTarget(page.getByRole("button", { name: "여정 취소" }));
   await train.click();
   await expect.poll(() => state.boardRequests.length).toBe(1);
-  expect(state.boardRequests).toEqual([{ train_no: "2207" }]);
+  expect(state.boardRequests).toEqual([{ train_no: "2207", retroactive: false }]);
   await expect(page.getByRole("heading", { name: "수도권2호선" })).toBeVisible();
   await expect(page.getByText("2207 열차 · 역삼 · 운행 중")).toBeVisible();
   await expectOpenStreetMapTilesAreLocallyFulfilled(state);
@@ -150,10 +151,11 @@ test("a timer-only leg remains boardable and submits the canonical null train pa
   await expect(page.getByText("이 구간은 실시간 열차 위치를 지원하지 않아요.")).toBeVisible();
   const timerBoard = page.getByRole("button", { name: "시간 기준으로 탑승 시작" });
   await expectNativeTouchTarget(timerBoard);
+  await expectNativeTouchTarget(page.getByRole("button", { name: "여정 취소" }));
   await timerBoard.click();
   await expect.poll(() => state.boardRequests.length).toBe(1);
   expect(state.arrivalsRequests).toBe(0);
-  expect(state.boardRequests).toEqual([{ train_no: null }]);
+  expect(state.boardRequests).toEqual([{ train_no: null, retroactive: false }]);
   await expect(page.getByText("예정 이동 시간을 기준으로 여정을 기록하고 있어요.")).toBeVisible();
   await expect(page.getByRole("button", { name: "내렸어요" })).toBeVisible();
   await expectNoHorizontalOverflow(page);

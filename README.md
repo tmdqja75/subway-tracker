@@ -13,7 +13,7 @@ frontend served from the same app in production.
 | Source | Used for |
 |---|---|
 | Tmap Transit API (`transit/routes`) | route search, per-leg station lists + coordinates, leg travel times |
-| Seoul realtime subway position (OA-12764, `realtimePosition`) | tracking the boarded train |
+| Seoul realtime subway position (OA-12764, `realtimePosition`) | tracking the boarded train and finding a correctly directed train already past the boarding station |
 | Seoul realtime station arrival (`realtimeStationArrival`, same key) | "closest approaching trains" picker |
 | Station master CSV (OA-21232) | station-name autocomplete + geocoding search endpoints |
 | Reitti `POST /api/v1/ingest/owntracks` | final trace upload (one OwnTracks point per request; deduped by timestamp, so retries are safe) |
@@ -168,10 +168,18 @@ persist outside the container.
 
 ## How tracking works
 
-- You pick a train from the arrivals list at your boarding station; the server
-  then polls the Seoul position API for that train number and interpolates
-  lat/lon between station coordinates by elapsed time (interpolated points are
-  marked lower-accuracy for Reitti).
+- You normally pick a train from the arrivals list at your boarding station.
+  If you already boarded before opening the tracker, you can instead choose a
+  correctly directed train whose live position is between the leg origin and
+  destination. The server then polls the Seoul position API for that train
+  number and interpolates lat/lon between station coordinates by elapsed time
+  (interpolated points are marked lower-accuracy for Reitti).
+- The Seoul position feed provides only a current station-relative observation,
+  not a historic departure/stop timeline. For a train selected after the
+  origin, the tracker reconstructs the origin-to-current path from the leg's
+  scheduled time, including estimated station pauses. Those backfilled points
+  are explicitly marked as estimated; tracking after the live observation
+  continues normally.
 - Realtime tracking uses adaptive polling: `POLL_INTERVAL_SECONDS` is the fast
   cadence near station events (default 5 s), while cruising between stations
   slows to about 30 s. The server starts polling fast again during the next

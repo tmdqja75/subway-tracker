@@ -740,6 +740,19 @@ h2 {
   list-style: none;
 }
 
+.train-picker__section {
+  display: grid;
+  gap: 8px;
+}
+
+.train-picker__section-heading {
+  margin: 0;
+  color: #203b5a;
+  font-size: 0.875rem;
+  font-weight: 780;
+  line-height: 1.35;
+}
+
 .train-card {
   display: grid;
   width: 100%;
@@ -788,6 +801,22 @@ h2 {
   font-weight: 780;
 }
 
+.train-card--onboard {
+  border-color: #e3c37e;
+  background: #fffaf0;
+}
+
+.train-card__warning {
+  padding: 8px 10px;
+  border-left: 3px solid #a96800;
+  border-radius: 6px;
+  background: #fff2d9;
+  color: #704600;
+  font-size: 0.8125rem;
+  font-weight: 720;
+  line-height: 1.45;
+}
+
 .train-card__action {
   display: inline-flex;
   min-height: 40px;
@@ -821,6 +850,44 @@ h2 {
   border: 1px solid #f1dfb7;
   border-radius: 14px;
   background: #fffaf0;
+}
+
+.train-picker__cancel {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.train-picker__cancel .button {
+  width: auto;
+  padding: 0 14px;
+}
+
+.train-picker__cancel-confirmation {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #f1d2d3;
+  border-radius: 14px;
+  background: #fff7f7;
+}
+
+.train-picker__cancel-confirmation h4 {
+  margin: 0;
+  color: #10233f;
+  font-size: 0.9375rem;
+  font-weight: 780;
+}
+
+.train-picker__cancel-confirmation p {
+  margin: 0;
+  color: #6a4145;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.train-picker__cancel-confirmation > div {
+  display: grid;
+  gap: 8px;
 }
 
 .live-journey {
@@ -869,6 +936,15 @@ h2 {
 .live-journey__summary .live-journey__points {
   color: #315b8d;
   font-weight: 760;
+}
+
+.live-journey__summary .live-journey__history-notice {
+  padding: 9px 10px;
+  border-left: 3px solid #a96800;
+  border-radius: 6px;
+  background: #fff8e8;
+  color: #604000;
+  font-weight: 720;
 }
 
 .live-journey-map {

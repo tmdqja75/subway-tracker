@@ -1,6 +1,7 @@
 """End-to-end state machine test with a scripted train feed and a fake Reitti."""
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ from app import journey as journey_mod
 from app.config import Settings
 from app.db import Database
 from app.journey import ActiveJourney, JourneyManager
-from app.models import Itinerary, JourneyState, LegStation, SubwayLeg, TrackPoint, TrainStatus
+from app.models import Itinerary, JourneyState, LegStation, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
 
 
@@ -28,6 +29,27 @@ def make_itinerary(shape: list | None = None) -> Itinerary:
         total_time=240, transfer_count=0, total_walk_time=0, fare=1400,
         legs=[leg], summary=["🚇 수도권3호선: 양재 → 도곡"],
     )
+
+
+def test_history_estimated_column_migrates_existing_journeys(tmp_path: Path):
+    db_path = tmp_path / "pre-history-estimated.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE journeys (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, "
+        "state TEXT NOT NULL, itinerary_json TEXT NOT NULL, current_leg_idx INTEGER NOT NULL DEFAULT 0, "
+        "train_no TEXT, tracking_mode TEXT, leg_started_at INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO journeys (created_at, state, itinerary_json) VALUES (1, 'awaiting_board', '{}')"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+
+    migrated = db.get_journey(1)
+    assert migrated is not None
+    assert migrated["history_estimated"] == 0
 
 
 @pytest.fixture
@@ -610,3 +632,308 @@ async def test_missing_train_fallback_is_based_on_elapsed_time(manager, monkeypa
     FakeTime._t = 1_000_091.0
     await manager._tick(j)
     assert j.tracking_mode == "timer"
+
+
+async def test_onboard_departure_backfills_estimated_history_and_station_dwell(manager, monkeypatch):
+    shape = [
+        [37.4837, 127.0354],
+        [37.4850, 127.0400],
+        [37.4870, 127.0468],
+        [37.4885, 127.0500],
+        [37.4909, 127.0553],
+    ]
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary(shape=shape))
+
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3001", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name="매봉", station_index=1,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+
+    points = manager.db.get_points(journey.id)
+    assert [point.ts for point in points] == sorted(point.ts for point in points)
+    assert all(point.estimated for point in points[:-1])
+    assert points[-1] == TrackPoint(lat=37.4870, lon=127.0468, ts=1_000_000, estimated=False)
+    # The 120-second station budget gives a 30-second dwell at 매봉: its
+    # estimated arrival and the later live departure share the station coords.
+    assert TrackPoint(lat=37.4870, lon=127.0468, ts=999_970, estimated=True) in points
+    assert any(
+        point.lat == pytest.approx(37.4850) and point.lon == pytest.approx(127.0400) and point.estimated
+        for point in points
+    )
+    assert journey.logged_idx == 1
+    assert journey.last_arrival_time == 999_970
+    assert journey.anchor_idx == 1
+    assert journey.anchor_phase == "segment"
+    assert manager.snapshot()["history_estimated"] is True
+
+
+@pytest.mark.parametrize(
+    ("status", "station_index", "station_name", "expected_phase", "expected_anchor_idx"),
+    [
+        ("arrived", 1, "매봉", "station", 1),
+        ("between", 2, "도곡", "segment", 1),
+    ],
+)
+async def test_onboard_station_and_between_anchors_continue_from_live_position(
+    manager, monkeypatch, status, station_index, station_name, expected_phase, expected_anchor_idx,
+):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3001", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name=station_name, station_index=station_index,
+            status=status, observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+
+    live = manager.db.get_points(journey.id)[-1]
+    assert live.ts == 1_000_000
+    assert live.estimated is False
+    assert journey.anchor_idx == expected_anchor_idx
+    assert journey.anchor_phase == expected_phase
+    assert journey.state == JourneyState.ON_TRAIN
+    assert journey.last_status is not None
+    assert journey.last_status.status == status
+    if status == "between":
+        assert journey.logged_idx == 1
+        assert (live.lat, live.lon) != (journey.leg.stations[1].lat, journey.leg.stations[1].lon)
+        assert (live.lat, live.lon) != (journey.leg.stations[2].lat, journey.leg.stations[2].lon)
+    else:
+        assert journey.logged_idx == 1
+
+
+async def test_history_estimated_persists_and_ordinary_board_remains_false(manager, monkeypatch):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    ordinary = await manager.start_journey(make_itinerary())
+    await manager.board("3001")
+    assert manager.db.get_journey(ordinary.id)["history_estimated"] == 0
+    assert manager.snapshot()["history_estimated"] is False
+
+    estimated = await manager.start_journey(make_itinerary())
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3002", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name="매봉", station_index=1,
+            status="arrived", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+    resumed = JourneyManager(manager.db, manager.settings)
+    monkeypatch.setattr(resumed, "_start_tracker", lambda: None)
+    resumed.resume_from_db()
+
+    assert manager.db.get_journey(estimated.id)["history_estimated"] == 1
+    assert resumed.active is not None
+    assert resumed.snapshot()["history_estimated"] is True
+
+
+async def test_onboard_origin_departure_starts_from_live_anchor_without_backfilled_segment(
+    manager, monkeypatch,
+):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3001", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name="양재", station_index=0,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+
+    points = manager.db.get_points(journey.id)
+    assert points == [
+        TrackPoint(lat=37.4837, lon=127.0354, ts=999_970, estimated=True),
+        TrackPoint(lat=37.4837, lon=127.0354, ts=1_000_000, estimated=False),
+    ]
+    assert journey.state == JourneyState.ON_TRAIN
+    assert journey.history_estimated is True
+    assert manager.snapshot()["history_estimated"] is True
+    assert journey.logged_idx == 0
+    assert journey.anchor_idx == 0
+    assert journey.anchor_phase == "segment"
+    assert journey.last_status is not None
+    assert journey.last_status.status == "departed"
+
+
+async def test_resumed_onboard_history_keeps_live_anchor_and_does_not_replay_backfill(
+    manager, monkeypatch,
+):
+    shape = [
+        [37.4837, 127.0354],
+        [37.4850, 127.0400],
+        [37.4870, 127.0468],
+        [37.4885, 127.0500],
+        [37.4909, 127.0553],
+    ]
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    async def fake_positions(key, line):
+        return [{"trainNo": "3001", "statnNm": "매봉", "trainSttus": "2"}]
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary(shape=shape))
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3001", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name="매봉", station_index=1,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+    reconstructed = manager.db.get_points(journey.id)
+
+    resumed = JourneyManager(manager.db, manager.settings)
+    monkeypatch.setattr(resumed, "_start_tracker", lambda: None)
+    monkeypatch.setattr(resumed, "_start_push", lambda *args, **kwargs: None)
+    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    resumed.resume_from_db()
+    assert resumed.active is not None
+
+    FakeTime._t = 1_000_005.0
+    await resumed._realtime_update(resumed.active)
+
+    # The same live departure may be the first update after restart, but it
+    # must not replay the estimated origin-to-매봉 geometry or overwrite anchor.
+    assert manager.db.get_points(journey.id) == reconstructed
+    assert resumed.active.logged_idx == 1
+    assert resumed.active.anchor_idx == 1
+    assert resumed.active.anchor_phase == "segment"
+
+    async def at_end(key, line):
+        return [{"trainNo": "3001", "statnNm": "도곡", "trainSttus": "1"}]
+
+    monkeypatch.setattr(journey_mod, "fetch_positions", at_end)
+    FakeTime._t = 1_000_120.0
+    await resumed._realtime_update(resumed.active)
+
+    continued = manager.db.get_points(journey.id)
+    assert [point.ts for point in continued] == sorted(point.ts for point in continued)
+    assert (37.4850, 127.0400) not in {
+        (round(point.lat, 4), round(point.lon, 4)) for point in continued[len(reconstructed):]
+    }
+    assert (37.4885, 127.0500) in {
+        (round(point.lat, 4), round(point.lon, 4)) for point in continued
+    }
+    assert continued[-1] == TrackPoint(lat=37.4909, lon=127.0553, ts=1_000_120, estimated=False)
+
+
+async def test_onboard_later_leg_retains_transfer_walk_before_reconstructed_history(manager, monkeypatch):
+    first = SubwayLeg(
+        route="수도권2호선", line_key=None, section_time=120,
+        start_name="강남", end_name="사당",
+        stations=[
+            LegStation(index=0, name="강남", lat=37.4980, lon=127.0277),
+            LegStation(index=1, name="사당", lat=37.4766, lon=126.9816),
+        ],
+        shape=[[37.4980, 127.0277], [37.4766, 126.9816]],
+        transfer_walk_time=120,
+        transfer_walk_shape=[
+            [37.4766, 126.9816],
+            [37.4767, 126.9813],
+            [37.4768, 126.9817],
+        ],
+    )
+    second = SubwayLeg(
+        route="수도권4호선", line_key="4호선", section_time=240,
+        start_name="사당", end_name="서울역",
+        stations=[
+            LegStation(index=0, name="사당", lat=37.4768, lon=126.9817),
+            LegStation(index=1, name="충무로", lat=37.5614, lon=126.9940),
+            LegStation(index=2, name="서울역", lat=37.5547, lon=126.9706),
+        ],
+        shape=[
+            [37.4768, 126.9817], [37.5200, 126.9880], [37.5614, 126.9940],
+            [37.5580, 126.9820], [37.5547, 126.9706],
+        ],
+    )
+    itinerary = Itinerary(
+        total_time=480, transfer_count=1, total_walk_time=120, fare=1600,
+        legs=[first, second], summary=["2호선", "도보", "4호선"],
+    )
+
+    class FakeTime:
+        @staticmethod
+        def time():
+            return 999_700.0
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(itinerary)
+    await manager.board(None)
+    await manager.alight()
+    assert journey.leg_idx == 1
+    assert journey.state == JourneyState.AWAITING_BOARD
+    # The real transfer clock can be later than the schedule-derived origin of
+    # an already-progressed train.  It must not put walk geometry after that
+    # reconstructed ride history.
+    journey.transfer_started_at = 999_900.0
+
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="4001", line_name="4호선", terminus="서울역",
+            direction_label="서울역 방면", station_name="충무로", station_index=1,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+
+    points = manager.db.get_points(journey.id)
+    transfer_midpoint = next(
+        point for point in points
+        if point.lat == pytest.approx(37.4767) and point.lon == pytest.approx(126.9813)
+    )
+    assert transfer_midpoint.estimated is True
+    assert 999_700 < transfer_midpoint.ts < 999_850
+    assert [point.ts for point in points] == sorted(point.ts for point in points)
+    # The walk ends no later than the reconstructed origin at 999850, then the
+    # later-leg history reaches the live non-estimated onboard anchor at 1m.
+    assert points[-1] == TrackPoint(
+        lat=37.5614, lon=126.9940, ts=1_000_000, estimated=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "station_index", "station_name"),
+    [
+        ("arrived", 0, "양재"),
+        ("approaching", 0, "양재"),
+        ("departed", 2, "도곡"),
+        ("arrived", 2, "도곡"),
+        ("approaching", 2, "도곡"),
+    ],
+)
+async def test_onboard_tracking_rejects_origin_arrival_and_at_end_candidates_without_transition(
+    manager, monkeypatch, status, station_index, station_name,
+):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+
+    with pytest.raises(ValueError, match="outside the active leg"):
+        await manager.begin_realtime_tracking_from_onboard(
+            OnboardTrain(
+                train_no="3001", line_name="3호선", terminus="도곡",
+                direction_label="도곡 방면", station_name=station_name, station_index=station_index,
+                status=status, observed_at=1_000_000, matches_direction=True,
+                is_express=False,
+            )
+        )
+
+    assert journey.state == JourneyState.AWAITING_BOARD
+    assert manager.db.get_journey(journey.id)["history_estimated"] == 0

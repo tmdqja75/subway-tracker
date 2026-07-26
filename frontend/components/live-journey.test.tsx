@@ -72,6 +72,14 @@ describe("LiveJourney", () => {
     expect(screen.getByText("기록된 위치 4개")).toBeVisible();
   });
 
+  it("discloses reconstructed early history while distinguishing live tracking", () => {
+    render(<LiveJourney journey={onTrainJourney({ history_estimated: true })} onJourneyRefresh={vi.fn()} />);
+
+    expect(screen.getByRole("status", { name: "추정 기록 안내" })).toHaveTextContent(
+      "이전 이동 기록은 재구성한 추정치이며, 현재 추적은 실시간입니다.",
+    );
+  });
+
   it("submits only one primary action while pending and refreshes the authoritative snapshot after success", async () => {
     const action = deferred<{ ok: true }>();
     const onJourneyRefresh = vi.fn();

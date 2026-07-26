@@ -18,7 +18,7 @@ import time
 
 from .config import Settings
 from .db import Database
-from .models import Itinerary, JourneyState, SubwayLeg, TrackPoint, TrainStatus
+from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from .reitti import ReittiError, push_points
 from .seoul import SeoulApiError, fetch_positions
 from .stations import normalize_name
@@ -98,6 +98,9 @@ class ActiveJourney:
         self.train_no: str | None = None
         self.tracking_mode: str | None = None
         self.leg_started_at: int | None = None
+        # True only when this leg began from a live train already underway and
+        # its earlier route was reconstructed from schedule/geometry data.
+        self.history_estimated = False
         # interpolation anchor: index of segment start station, and whether the
         # train was last seen stopped at it (phase "station") or running past
         # it (phase "segment")
@@ -168,6 +171,7 @@ class JourneyManager:
         j.train_no = row["train_no"]
         j.tracking_mode = row["tracking_mode"]
         j.leg_started_at = row["leg_started_at"]
+        j.history_estimated = bool(row["history_estimated"])
         j.error = row["error"]
         j.error_reason = row["error_reason"]
         j.error_sent_points = row["error_sent_points"]
@@ -182,11 +186,82 @@ class JourneyManager:
             j.transfer_total_points = row["error_total_points"]
         self.active = j
         if j.state == JourneyState.ON_TRAIN:
-            j.prepare_leg()  # stale after restart; re-syncs on the next poll
+            j.prepare_leg()  # rebuild geometry mapping before restoring durable progress
+            self._restore_leg_progress(j)
             self._start_tracker()
         elif j.state == JourneyState.PUSHING:
             self._start_push(j, resume=True)
         log.info("resumed journey %s in state %s", j.id, j.state)
+
+    def _restore_leg_progress(self, j: ActiveJourney) -> None:
+        """Recover the logged route and live interpolation anchor from points.
+
+        SQLite intentionally persists the route points rather than transient
+        tracker objects.  In particular, a retroactively started leg has an
+        estimated path ending at one current non-estimated observation.  A
+        fresh ``prepare_leg`` must not make the next position poll regard that
+        history as unlogged and replay it from the origin.
+        """
+        points = self.db.get_points(j.id, leg_idx=j.leg_idx)
+        if not points:
+            return
+
+        station_matches: list[tuple[int, TrackPoint]] = []
+        for point in points:
+            for station_idx, station in enumerate(j.leg.stations):
+                if abs(point.lat - station.lat) < 1e-7 and abs(point.lon - station.lon) < 1e-7:
+                    station_matches.append((station_idx, point))
+                    break
+        if station_matches:
+            j.logged_idx = max(station_idx for station_idx, _ in station_matches)
+            at_logged = [point for station_idx, point in station_matches if station_idx == j.logged_idx]
+            estimated_arrivals = [point.ts for point in at_logged if point.estimated]
+            j.last_arrival_time = max(estimated_arrivals or [point.ts for point in at_logged])
+
+        live_points = [point for point in points if not point.estimated]
+        if not live_points:
+            return
+        live = max(live_points, key=lambda point: point.ts)
+        live_station_idx = next(
+            (
+                station_idx
+                for station_idx, station in enumerate(j.leg.stations)
+                if abs(live.lat - station.lat) < 1e-7 and abs(live.lon - station.lon) < 1e-7
+            ),
+            None,
+        )
+        if live_station_idx is not None:
+            j.anchor_idx = live_station_idx
+            # A preceding estimated point at this station is the reconstructed
+            # arrival before the persisted live departure observation.  Without
+            # it, the observation is a station anchor.
+            j.anchor_phase = "segment" if any(
+                point.estimated and point.ts < live.ts
+                for station_idx, point in station_matches
+                if station_idx == live_station_idx
+            ) else "station"
+            j.anchor_time = float(live.ts)
+            return
+
+        # The only non-station live anchor is a reconstructed "between" point.
+        # Locate it on the closest station hop and preserve its elapsed fraction
+        # so local interpolation continues from the observed position.
+        best_idx, best_fraction, best_distance = 0, 0.0, float("inf")
+        for station_idx in range(len(j.leg.stations) - 1):
+            start, end = j.leg.stations[station_idx : station_idx + 2]
+            dx, dy = end.lat - start.lat, end.lon - start.lon
+            length_sq = dx * dx + dy * dy
+            fraction = 0.0 if length_sq <= 0 else min(max(
+                ((live.lat - start.lat) * dx + (live.lon - start.lon) * dy) / length_sq,
+                0.0,
+            ), 1.0)
+            lat, lon = _lerp(start.lat, end.lat, fraction), _lerp(start.lon, end.lon, fraction)
+            distance = (live.lat - lat) ** 2 + (live.lon - lon) ** 2
+            if distance < best_distance:
+                best_idx, best_fraction, best_distance = station_idx, fraction, distance
+        j.anchor_idx = best_idx
+        j.anchor_phase = "segment"
+        j.anchor_time = live.ts - self._segment_seconds(j) * best_fraction
 
     async def start_journey(self, itinerary: Itinerary) -> ActiveJourney:
         if self.active and self.active.state != JourneyState.COMPLETED:
@@ -223,6 +298,225 @@ class JourneyManager:
             transfer_total_points=None,
         )
         self._start_tracker()
+
+    async def begin_realtime_tracking_from_onboard(self, candidate: OnboardTrain) -> None:
+        """Track a freshly revalidated train that is already inside this leg.
+
+        Seoul exposes a current station-relative observation, not historic stop
+        events. Earlier points are explicitly schedule-derived estimates; the
+        selected observation is persisted as the first non-estimated anchor.
+        """
+        j = self._require_active()
+        if j.state != JourneyState.AWAITING_BOARD:
+            raise ValueError(f"cannot begin onboard tracking in state {j.state}")
+        if not isinstance(candidate, OnboardTrain):
+            raise ValueError("onboard candidate must be an OnboardTrain")
+        self._validate_onboard_candidate(j, candidate)
+
+        j.train_no = candidate.train_no
+        j.tracking_mode = "realtime"
+        j.state = JourneyState.ON_TRAIN
+        j.transfer_sent_points = None
+        j.transfer_total_points = None
+        j.history_estimated = True
+        j.prepare_leg()
+
+        budget, dwell, run = self._reconstruction_timing(j)
+        observed_at = float(candidate.observed_at)
+        idx = candidate.station_index
+        if candidate.status == "departed":
+            # observed_at is approximate departure from idx; its arrival is
+            # retained as an estimated pause before the live departure anchor.
+            origin_arrival = observed_at - idx * budget - dwell
+        elif candidate.status in ("arrived", "approaching"):
+            origin_arrival = observed_at - idx * budget
+        else:  # between: station_index is the reported next station
+            origin_arrival = observed_at - (idx - 1) * budget - dwell - run / 2
+
+        # An onboard start skips the normal board() path, which is where the
+        # preceding transfer's walk is usually recorded.  Finish that walk at
+        # the reconstructed origin timestamp so it remains before the inferred
+        # ride history and the current live observation.
+        if j.leg_idx > 0:
+            self._log_transfer_walk(j, j.leg_idx - 1, origin_arrival)
+        j.transfer_started_at = None
+
+        if candidate.status == "departed":
+            # observed_at is approximate departure from idx; its arrival is
+            # retained as an estimated pause before the live departure anchor.
+            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            j.logged_idx = idx
+            j.last_arrival_time = observed_at - dwell
+            j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "segment", observed_at
+            lat, lon = j.leg.stations[idx].lat, j.leg.stations[idx].lon
+        elif candidate.status in ("arrived", "approaching"):
+            # observed_at is the station arrival for these feed statuses.
+            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            j.logged_idx = idx
+            j.last_arrival_time = observed_at
+            j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "station", observed_at
+            lat, lon = j.leg.stations[idx].lat, j.leg.stations[idx].lon
+        else:  # between: station_index is the reported next station
+            previous_idx = idx - 1
+            # Feed status 3 does not include GPS. Anchor the current live
+            # observation halfway along the actual Tmap geometry instead.
+            self._reconstruct_history(
+                j, origin_arrival, previous_idx, budget, dwell, run,
+                partial_segment_fraction=0.5,
+            )
+            j.logged_idx = previous_idx
+            j.last_arrival_time = origin_arrival + previous_idx * budget
+            # _interpolate uses the full existing station budget; this keeps
+            # its local presentation at the midpoint until the next API poll.
+            j.anchor_idx, j.anchor_phase, j.anchor_time = (
+                previous_idx, "segment", observed_at - budget / 2,
+            )
+            lat, lon = self._segment_geometry(j, previous_idx, fraction=0.5)[-1]
+
+        j.leg_started_at = int(origin_arrival)
+        j.lost_polls = 0
+        j.missing_since = None
+        j.next_seoul_poll_at = 0.0
+        j.last_status = TrainStatus(
+            train_no=candidate.train_no,
+            station_name=candidate.station_name,
+            station_index=idx,
+            status=candidate.status,
+            lat=lat,
+            lon=lon,
+            updated_at=int(observed_at),
+        )
+        # An estimated geometry endpoint can land at the same second. Latest
+        # write wins in SQLite, so this current observation stays authoritative.
+        self._emit_at(j, lat, lon, int(observed_at), estimated=False)
+        self.db.update_journey(
+            j.id,
+            state=j.state,
+            train_no=j.train_no,
+            tracking_mode=j.tracking_mode,
+            leg_started_at=j.leg_started_at,
+            history_estimated=True,
+            transfer_sent_points=None,
+            transfer_total_points=None,
+        )
+        self._start_tracker()
+
+    def _validate_onboard_candidate(self, j: ActiveJourney, candidate: OnboardTrain) -> None:
+        """Reject stale/hand-crafted candidates before they can start tracking."""
+        stations = j.leg.stations
+        if not j.leg.line_key or len(stations) < 2:
+            raise ValueError("active leg does not support realtime onboard tracking")
+        if not candidate.train_no.strip() or not candidate.matches_direction or candidate.observed_at <= 0:
+            raise ValueError("invalid onboard train candidate")
+        if candidate.status not in {"approaching", "arrived", "departed", "between"}:
+            raise ValueError("invalid onboard train status")
+        names = [normalize_name(station.name) for station in stations]
+        station_name = normalize_name(candidate.station_name)
+        if (
+            candidate.station_index < 0
+            or candidate.station_index >= len(stations)
+            or station_name not in names
+            or names[candidate.station_index] != station_name
+        ):
+            raise ValueError("onboard train station does not match the active leg")
+        last_idx = len(stations) - 1
+        if candidate.status == "between":
+            # It may be in the final segment, but never beyond the alight stop.
+            if not 0 < candidate.station_index <= last_idx:
+                raise ValueError("onboard train is outside the active leg")
+            active_location = candidate.station_index - 0.5
+        elif candidate.status == "departed":
+            # A departure observed at the rider's origin is already underway,
+            # while a departure at the alight station is not a usable ride.
+            if not 0 <= candidate.station_index < last_idx:
+                raise ValueError("onboard train is outside the active leg")
+            active_location = float(candidate.station_index)
+        else:
+            # Arrivals and approaches at an endpoint remain board/alight states,
+            # not an already-onboard interior candidate.
+            if not 0 < candidate.station_index < last_idx:
+                raise ValueError("onboard train is outside the active leg")
+            active_location = float(candidate.station_index)
+        terminus = normalize_name(candidate.terminus)
+        if terminus not in names or names.index(terminus) <= active_location:
+            raise ValueError("onboard train direction does not match the active leg")
+
+    def _reconstruction_timing(self, j: ActiveJourney) -> tuple[float, float, float]:
+        station_count = len(j.leg.stations)
+        budget = max(j.leg.section_time / max(station_count - 1, 1), 30)
+        dwell = min(30, budget * 0.25)
+        return budget, dwell, budget - dwell
+
+    def _segment_geometry(
+        self, j: ActiveJourney, start_idx: int, *, fraction: float = 1.0,
+    ) -> list[list[float]]:
+        """Tmap geometry for one station hop, optionally cut at its distance fraction."""
+        end_idx = start_idx + 1
+        if j.shape_idx:
+            points = [list(point) for point in j.leg.shape[j.shape_idx[start_idx] : j.shape_idx[end_idx] + 1]]
+        else:
+            points = [
+                [j.leg.stations[start_idx].lat, j.leg.stations[start_idx].lon],
+                [j.leg.stations[end_idx].lat, j.leg.stations[end_idx].lon],
+            ]
+        fraction = min(max(fraction, 0.0), 1.0)
+        if fraction >= 1.0 or len(points) < 2:
+            return points
+        fractions = _distance_fractions(points)
+        prefix = [points[0]]
+        for point_idx in range(1, len(points)):
+            if fractions[point_idx] <= fraction:
+                prefix.append(points[point_idx])
+                continue
+            before_fraction, after_fraction = fractions[point_idx - 1], fractions[point_idx]
+            local_fraction = 0.0 if after_fraction <= before_fraction else (
+                (fraction - before_fraction) / (after_fraction - before_fraction)
+            )
+            before, after = points[point_idx - 1], points[point_idx]
+            prefix.append([
+                _lerp(before[0], after[0], local_fraction),
+                _lerp(before[1], after[1], local_fraction),
+            ])
+            break
+        return prefix
+
+    def _reconstruct_history(
+        self,
+        j: ActiveJourney,
+        origin_arrival: float,
+        full_segments: int,
+        budget: float,
+        dwell: float,
+        run: float,
+        *,
+        partial_segment_fraction: float | None = None,
+    ) -> None:
+        """Write schedule-derived origin-to-anchor points, all marked estimated."""
+        origin = j.leg.stations[0]
+        self._emit_at(j, origin.lat, origin.lon, int(origin_arrival), estimated=True)
+        for station_idx in range(full_segments):
+            arrived_at = origin_arrival + station_idx * budget
+            departed_at = arrived_at + dwell
+            station = j.leg.stations[station_idx]
+            # Arrival and later departure preserve an explicit station pause.
+            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
+            geometry = self._segment_geometry(j, station_idx)
+            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
+                self._emit_at(
+                    j, point[0], point[1], int(departed_at + run * distance_fraction), estimated=True,
+                )
+        if partial_segment_fraction is not None:
+            station_idx = full_segments
+            arrived_at = origin_arrival + station_idx * budget
+            departed_at = arrived_at + dwell
+            station = j.leg.stations[station_idx]
+            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
+            geometry = self._segment_geometry(j, station_idx, fraction=partial_segment_fraction)
+            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
+                self._emit_at(
+                    j, point[0], point[1],
+                    int(departed_at + run * partial_segment_fraction * distance_fraction), estimated=True,
+                )
 
     async def alight(self) -> None:
         """Manual override: user says they got off at the leg's end station."""
@@ -519,7 +813,7 @@ class JourneyManager:
         if not pts:
             return
 
-        if j.transfer_started_at is None:
+        if j.transfer_started_at is None or j.transfer_started_at > now:
             span = max(float(prev_leg.transfer_walk_time), 1.0)
             start_t = now - span
         else:
@@ -776,6 +1070,7 @@ class JourneyManager:
             "summary": j.itinerary.summary,
             "train": j.last_status.model_dump() if j.last_status else None,
             "tracking_mode": j.tracking_mode,
+            "history_estimated": j.history_estimated,
             "point_count": self.db.point_count(j.id),
             "error": j.error,
             "transfer": transfer,

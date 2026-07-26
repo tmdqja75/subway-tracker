@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS journeys (
     train_no TEXT,
     tracking_mode TEXT,           -- realtime | timer
     leg_started_at INTEGER,
+    history_estimated INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     error_reason TEXT,
     error_sent_points INTEGER,
@@ -73,6 +74,7 @@ class Database:
             ("error_total_points", "INTEGER"),
             ("transfer_sent_points", "INTEGER"),
             ("transfer_total_points", "INTEGER"),
+            ("history_estimated", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in journey_columns:
                 self.conn.execute(f"ALTER TABLE journeys ADD COLUMN {column} {column_type}")
@@ -105,7 +107,7 @@ class Database:
 
     def create_journey(self, itinerary: Itinerary, state: str) -> int:
         cur = self.conn.execute(
-            "INSERT INTO journeys (created_at, state, itinerary_json) VALUES (?, ?, ?)",
+            "INSERT INTO journeys (created_at, state, itinerary_json, history_estimated) VALUES (?, ?, ?, 0)",
             (int(time.time()), state, itinerary.model_dump_json()),
         )
         self.conn.commit()
@@ -264,11 +266,17 @@ class Database:
         )
         self.conn.commit()
 
-    def get_points(self, journey_id: int) -> list[TrackPoint]:
-        rows = self.conn.execute(
-            "SELECT lat, lon, ts, estimated FROM points WHERE journey_id = ? ORDER BY ts",
-            (journey_id,),
-        ).fetchall()
+    def get_points(self, journey_id: int, leg_idx: int | None = None) -> list[TrackPoint]:
+        if leg_idx is None:
+            query = "SELECT lat, lon, ts, estimated FROM points WHERE journey_id = ? ORDER BY ts"
+            params = (journey_id,)
+        else:
+            query = (
+                "SELECT lat, lon, ts, estimated FROM points "
+                "WHERE journey_id = ? AND leg_idx = ? ORDER BY ts"
+            )
+            params = (journey_id, leg_idx)
+        rows = self.conn.execute(query, params).fetchall()
         return [
             TrackPoint(lat=r["lat"], lon=r["lon"], ts=r["ts"], estimated=bool(r["estimated"]))
             for r in rows

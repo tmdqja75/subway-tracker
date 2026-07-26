@@ -82,6 +82,21 @@ class ArrivingTrain(BaseModel):
     is_express: bool
 
 
+class OnboardTrain(BaseModel):
+    """A realtime-position train already travelling within a subway leg."""
+
+    train_no: str
+    line_name: str
+    terminus: str
+    direction_label: str
+    station_name: str
+    station_index: int  # next station while status is "between"
+    status: str  # approaching / arrived / departed / between
+    observed_at: int  # unix epoch seconds
+    matches_direction: bool
+    is_express: bool
+
+
 class TrackPoint(BaseModel):
     lat: float
     lon: float
