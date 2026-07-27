@@ -99,6 +99,32 @@ is at `http://<server>:8081/debug.html`. The Compose port is published on all
 host interfaces; put the service behind an HTTPS reverse proxy or bind it to
 `127.0.0.1` before exposing it publicly.
 
+### App icon and iPhone home screen
+
+The Next.js static export supplies its browser favicon from
+`frontend/app/icon.png` and its iPhone Home Screen icon from
+`frontend/app/apple-icon.png`. The accompanying `frontend/app/manifest.ts`
+declares standalone installation metadata.
+
+To replace the icon everywhere:
+
+1. Replace `frontend/app/icon.png` with the new **square 1024×1024 PNG**. This
+   is the favicon and the icon listed in the web manifest.
+2. Regenerate the matching 180×180 Apple Touch icon:
+
+   ```bash
+   sips -z 180 180 frontend/app/icon.png --out frontend/app/apple-icon.png
+   ```
+
+3. Keep the two `icons` entries in `frontend/app/manifest.ts` aligned with the
+   files and dimensions above. Update `name`, `short_name`, `description`, or
+   the color fields there if the overall product branding has also changed.
+4. From `frontend/`, run `npm test`, `npm run typecheck`, and `npm run build`,
+   then rebuild and deploy the Docker image.
+5. Browsers and iOS cache icons aggressively. Hard-refresh browser tabs; on an
+   iPhone, remove the old Home Screen shortcut and use Safari's **Add to Home
+   Screen** again after the deployment is reachable over HTTPS.
+
 To deploy an update, pull the intended revision and rebuild the service. The
 `./data` bind mount preserves the station CSV and SQLite database.
 

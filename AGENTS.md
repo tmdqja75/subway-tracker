@@ -82,6 +82,12 @@ builds `frontend/out` in a Node stage, then the Python runtime copies that
 export and the retained debug assets into `/app/static`. `app.main` includes
 the API router before mounting root static files; preserve that order.
 
+Browser and install branding use Next's App Router metadata-file conventions:
+`frontend/app/icon.png` is the square favicon/manifest icon,
+`frontend/app/apple-icon.png` is the 180×180 Apple Touch icon, and
+`frontend/app/manifest.ts` declares standalone app metadata. Keep the two PNGs
+square and update the manifest dimensions if either icon size changes.
+
 Leaflet is client-only. Keep browser globals and Leaflet imports inside the
 component effect boundary, validate map geometry, and clean maps/layers on
 identity changes and unmount. Do not let volatile polling counters recreate
