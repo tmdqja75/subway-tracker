@@ -36,6 +36,43 @@ class StationSnapshot:
     dn: list[TrainEntry]
 
 
+# up = decreasing snapshot index, dn = increasing snapshot index: verified
+# against live traffic across every line, including every appended branch.
+# Only these two lines loop and need an explicit wrap rule; every other
+# line uses the plain +/-1 rule.
+_LOOP_WRAP = {
+    "2호선": {"forward_wrap": (42, 0), "backward_wrap": (0, 42)},
+    "6호선": {"backward_wrap": (0, 5)},
+}
+_MAX_LINE_STATIONS = 200  # generous bound; no real line snapshot is this long
+
+
+def _step(line_key: str, idx: int, direction: int) -> int:
+    """One physical hop from idx in `direction` (+1 dn, -1 up), honoring
+    this line's loop topology (see _LOOP_WRAP)."""
+    rules = _LOOP_WRAP.get(line_key, {})
+    if direction == 1 and rules.get("forward_wrap") and idx == rules["forward_wrap"][0]:
+        return rules["forward_wrap"][1]
+    if direction == -1 and rules.get("backward_wrap") and idx == rules["backward_wrap"][0]:
+        return rules["backward_wrap"][1]
+    return idx + direction
+
+
+def _stations_between(line_key: str, start: int, target: int, direction: int) -> int | None:
+    """Number of _step hops from start to target following `direction`.
+
+    None if target isn't reached within _MAX_LINE_STATIONS hops (target is
+    not behind start in this direction, e.g. it's the wrong way or on an
+    unrelated branch).
+    """
+    idx = start
+    for count in range(_MAX_LINE_STATIONS):
+        if idx == target:
+            return count
+        idx = _step(line_key, idx, direction)
+    return None
+
+
 def _parse_entries(raw: list[dict]) -> list[TrainEntry]:
     return [
         TrainEntry(
