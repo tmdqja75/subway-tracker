@@ -10,6 +10,7 @@ services:
       DB_PATH: /app/data/tracker.db
       STATIONS_CSV: /app/data/stations.csv
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SUBWAY_API_URL: ${SUBWAY_API_URL:-http://localhost:8000}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://host.docker.internal:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-subway-tracker}
