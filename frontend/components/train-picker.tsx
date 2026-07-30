@@ -3,12 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 
 import { boardCurrentJourney, cancelCurrentJourney, getCurrentArrivals } from "../lib/api";
+import { buildBoardingLine } from "../lib/boarding-line";
 import type {
   ActiveJourneySnapshot,
   ArrivingTrain,
   CurrentArrivalsResponse,
   OnboardTrain,
 } from "../lib/types";
+import { BoardingLine } from "./boarding-line";
 import { Button } from "./ui/button";
 
 type AwaitingBoardJourney = Extract<ActiveJourneySnapshot, { state: "awaiting_board" }>;
@@ -229,6 +231,9 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
   const eligibleOnboardTrains = arrivals?.already_onboard.filter((train) => train.matches_direction) ?? [];
   const hasEligibleTrains = eligibleTrains.length > 0 || eligibleOnboardTrains.length > 0;
   const boardingLocked = boarding || boardSucceeded || cancelling || cancelSucceeded;
+  const boardingLine = arrivals
+    ? buildBoardingLine(journey.leg.stations, journey.leg.start, arrivals.trains, arrivals.already_onboard)
+    : null;
 
   return (
     <div className="train-picker">
@@ -251,6 +256,8 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
               새로고침
             </Button>
           </div>
+
+          {boardingLine ? <BoardingLine {...boardingLine} /> : null}
 
           {arrivalsLoading && arrivals === null ? <p className="train-picker__message" role="status">도착 열차를 확인하는 중이에요.</p> : null}
           {arrivalsError ? <p className="field-error" role="alert">{arrivalsError}</p> : null}

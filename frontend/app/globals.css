@@ -890,6 +890,203 @@ h2 {
   gap: 8px;
 }
 
+/*
+ * Boarding-line: decorative summary of nearby trains, drawn directly on the
+ * app's page background (no white card) so it reads as part of the page
+ * rather than a floating panel. Station/gap rows share fixed name and rail
+ * column widths so the rail lines up continuously across rows without any
+ * absolute-position pixel math.
+ */
+.boarding-line {
+  display: grid;
+  gap: 0;
+  padding: 6px 0 10px;
+}
+
+.boarding-line__station,
+.boarding-line__gap {
+  display: flex;
+  align-items: center;
+  column-gap: 10px;
+}
+
+.boarding-line__station {
+  min-height: 2.75rem;
+}
+
+.boarding-line__gap {
+  height: 4rem;
+}
+
+.boarding-line__name,
+.boarding-line__name-spacer {
+  flex: 0 0 7rem;
+  min-width: 0;
+  text-align: right;
+}
+
+.boarding-line__name {
+  color: #10233f;
+  font-size: 0.875rem;
+  font-weight: 720;
+  line-height: 1.25;
+  word-break: keep-all;
+}
+
+.boarding-line__station--current .boarding-line__name {
+  color: #183f70;
+  font-size: 0.9375rem;
+  font-weight: 800;
+}
+
+.boarding-line__rail-col {
+  position: relative;
+  flex: 0 0 24px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.boarding-line__rail-col::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 4px;
+  border-radius: 999px;
+  background: #aec3d9;
+  content: "";
+  transform: translateX(-50%);
+}
+
+.boarding-line__node {
+  position: relative;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  border: 3px solid #1e4e85;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 4px #edf4fc;
+}
+
+.boarding-line__station--current .boarding-line__node {
+  width: 26px;
+  height: 26px;
+  border-color: #183f70;
+  background: #183f70;
+  box-shadow: 0 0 0 5px rgba(24, 63, 112, 0.16);
+  animation: boarding-line-pulse 2s ease-in-out infinite;
+}
+
+@keyframes boarding-line-pulse {
+  0%, 100% { box-shadow: 0 0 0 5px rgba(24, 63, 112, 0.16); }
+  50% { box-shadow: 0 0 0 8px rgba(24, 63, 112, 0.09); }
+}
+
+.boarding-line__detail {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.boarding-line__here-chip {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #183f70;
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.boarding-line__train-icon {
+  z-index: 2;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #183f70;
+  box-shadow: 0 2px 8px rgba(16, 35, 63, 0.3);
+  color: #fff;
+  font-size: 0.6875rem;
+}
+
+.boarding-line__train-icon--departed {
+  background: #7c8ea3;
+}
+
+.boarding-line__train-icon--arrived {
+  background: #3c9c69;
+}
+
+.boarding-line__gap .boarding-line__train-icon {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.boarding-line__station .boarding-line__train-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.boarding-line__train-pill {
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1.5px solid #d9e4ef;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 3px 8px rgba(23, 44, 72, 0.08);
+  color: #183f70;
+  font-size: 0.75rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.boarding-line__train-pill--arrived {
+  border-color: #3c9c69;
+  color: #3c9c69;
+}
+
+.boarding-line__train-pill--departed {
+  color: #526477;
+  opacity: 0.85;
+}
+
+.boarding-line__gap .boarding-line__train-pill {
+  position: absolute;
+  left: 0;
+  transform: translateY(-50%);
+}
+
+.boarding-line__dest {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.boarding-line__express {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #fff2d9;
+  color: #8a5909;
+  font-size: 0.625rem;
+  font-weight: 800;
+}
+
 .live-journey {
   display: grid;
   gap: 14px;
