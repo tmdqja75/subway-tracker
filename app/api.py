@@ -7,8 +7,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
-from .seoul import SeoulApiError, fetch_arrivals, fetch_positions, find_onboard_trains
 from .stations import normalize_name
+from .subway_feed import SubwayApiError, fetch_arrivals, fetch_onboard_candidates
 from .tmap import TmapError, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
@@ -36,51 +36,19 @@ def _route_cache_key(start, end) -> tuple[str, str, str, str]:
     return (normalize_name(start.name), start.line, normalize_name(end.name), end.line)
 
 
-async def _fetch_leg_arrivals(settings, leg, registry=None):
+async def _fetch_leg_arrivals(settings, leg):
     """Return trains that are still boardable for the given subway leg."""
-    upcoming = [s.name for s in leg.stations[1:]]
-    fallback_kwargs = (
-        {"fallback_api_key": settings.seoul_api_key_two}
-        if settings.seoul_api_key_two
-        else {}
-    )
-    stops = len(leg.stations) - 1
-    if stops > 0:
-        fallback_kwargs["avg_seconds_per_station"] = leg.section_time / stops
-    # Seoul's realtimeStationArrival is inconsistent about parenthetical
-    # station-name disambiguators: some stations only match with the CSV's
-    # full "역명(부기명)" form, others only match the bare Tmap/normalized
-    # name. Offer the station registry's raw name as a fallback query so
-    # boarding never silently returns zero trains for either family.
-    station = registry.find(leg.start_name, leg.line_key) if registry else None
-    if station and station.name != leg.start_name:
-        fallback_kwargs["alt_station_name"] = station.name
     try:
-        return await fetch_arrivals(
-            settings.seoul_api_key,
-            leg.start_name,
-            leg.line_key,
-            upcoming,
-            **fallback_kwargs,
-        )
-    except SeoulApiError as e:
+        return await fetch_arrivals(settings.subway_api_url, leg)
+    except SubwayApiError as e:
         raise HTTPException(502, str(e))
 
 
-async def _fetch_leg_positions(settings, leg):
-    """Return current realtime-position records for a covered subway leg."""
-    fallback_kwargs = (
-        {"fallback_api_key": settings.seoul_api_key_two}
-        if settings.seoul_api_key_two
-        else {}
-    )
+async def _fetch_leg_onboard(settings, leg):
+    """Return already-onboard candidates for a covered subway leg."""
     try:
-        return await fetch_positions(
-            settings.seoul_api_key,
-            leg.line_key,
-            **fallback_kwargs,
-        )
-    except SeoulApiError as e:
+        return await fetch_onboard_candidates(settings.subway_api_url, leg, now=time.time())
+    except SubwayApiError as e:
         raise HTTPException(502, str(e))
 
 
@@ -169,22 +137,16 @@ async def arrivals(request: Request):
     leg = j.leg
     if not leg.line_key:
         return {"covered": False, "trains": [], "already_onboard": []}
-    trains = await _fetch_leg_arrivals(settings, leg, request.app.state.stations)
+    trains = await _fetch_leg_arrivals(settings, leg)
     try:
-        positions = await _fetch_leg_positions(settings, leg)
+        already_onboard = await _fetch_leg_onboard(settings, leg)
     except HTTPException as error:
-        # Position candidates are an optional picker enhancement; preserve
-        # usable arrival cards when the independent position feed is down.
         log.warning(
-            "optional realtime-position lookup failed; returning arrivals without "
+            "optional onboard-candidate lookup failed; returning arrivals without "
             "onboard candidates line=%s station=%s status=%s",
-            leg.line_key,
-            leg.start_name,
-            error.status_code,
+            leg.line_key, leg.start_name, error.status_code,
         )
         already_onboard = []
-    else:
-        already_onboard = find_onboard_trains(positions, leg, now=time.time())
     return {
         "covered": True,
         "trains": [train.model_dump() for train in trains],
@@ -201,15 +163,8 @@ async def board(request: Request, body: BoardRequest):
             raise HTTPException(409, "retroactive board requires an onboard train")
         if not j or not j.leg.line_key:
             raise HTTPException(409, "retroactive boarding is unavailable for this leg")
-        positions = await _fetch_leg_positions(request.app.state.settings, j.leg)
-        candidate = next(
-            (
-                train
-                for train in find_onboard_trains(positions, j.leg, now=time.time())
-                if train.train_no == body.train_no
-            ),
-            None,
-        )
+        candidates = await _fetch_leg_onboard(request.app.state.settings, j.leg)
+        candidate = next((c for c in candidates if c.train_no == body.train_no), None)
         if candidate is None:
             raise HTTPException(409, "selected train is no longer travelling this leg")
         try:
@@ -218,7 +173,7 @@ async def board(request: Request, body: BoardRequest):
             raise HTTPException(409, str(e))
         return {"ok": True}
     if body.train_no and j and j.leg.line_key:
-        trains = await _fetch_leg_arrivals(request.app.state.settings, j.leg, request.app.state.stations)
+        trains = await _fetch_leg_arrivals(request.app.state.settings, j.leg)
         if body.train_no not in {train.train_no for train in trains}:
             raise HTTPException(409, "selected train is no longer approaching this platform")
     try:

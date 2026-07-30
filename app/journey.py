@@ -20,8 +20,8 @@ from .config import Settings
 from .db import Database
 from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from .reitti import ReittiError, push_points
-from .seoul import SeoulApiError, fetch_positions
 from .stations import normalize_name
+from .subway_feed import LegTrainStatus, SubwayApiError, locate_train
 
 log = logging.getLogger(__name__)
 
@@ -574,8 +574,8 @@ class JourneyManager:
                     return
                 try:
                     await self._tick(j)
-                except SeoulApiError as e:
-                    log.warning("seoul api error, keeping last anchor: %s", e)
+                except SubwayApiError as e:
+                    log.warning("subway feed error, keeping last anchor: %s", e)
                 except Exception:
                     log.exception("tracker tick failed")
                 if not j or j.state != JourneyState.ON_TRAIN:
@@ -674,93 +674,59 @@ class JourneyManager:
         )
 
     async def _realtime_update(self, j: ActiveJourney) -> bool:
-        """Poll the position API; write the travelled path on each station
-        arrival; complete the leg at the end station.
-        Returns False when the train number is absent from the feed."""
-        fallback_kwargs = (
-            {"fallback_api_key": self.settings.seoul_api_key_two}
-            if self.settings.seoul_api_key_two
-            else {}
-        )
-        positions = await fetch_positions(
-            self.settings.seoul_api_key,
-            j.leg.line_key,
-            **fallback_kwargs,
-        )
-        train = next((p for p in positions if p.get("trainNo") == j.train_no), None)
-        if train is None:
-            log.debug(
-                "journey %s: train_no=%s not found among %d positions on line=%s (train_nos=%s)",
-                j.id, j.train_no, len(positions), j.leg.line_key,
-                [p.get("trainNo") for p in positions],
-            )
+        """Poll the subway feed for the boarded train; write the travelled
+        path on each station arrival; complete the leg at the end station.
+        Returns False when the train is absent from the feed entirely."""
+        result = await locate_train(self.settings.subway_api_url, j.leg, j.train_no)
+        now = time.time()
+        if result is None:
+            log.debug("journey %s: train_no=%s not found on line=%s", j.id, j.train_no, j.leg.line_key)
             return False
 
-        names = [normalize_name(s.name) for s in j.leg.stations]
-        statn = normalize_name(train.get("statnNm", ""))
-        sttus = train.get("trainSttus", "")
-        now = time.time()
-        log.debug(
-            "journey %s: train %s raw statnNm=%r -> normalized=%r sttus=%s",
-            j.id, j.train_no, train.get("statnNm", ""), statn, sttus,
-        )
-
-        if statn not in names:
-            # Train hasn't reached our boarding station yet (user waiting on the
-            # platform) — or it already ran past the whole leg.
+        if result.leg_index is None:
+            # Train hasn't reached our boarding station yet (user waiting on
+            # the platform) — or it already ran past the whole leg.
             log.debug(
-                "journey %s: statn=%r not in leg station names=%s (anchor_idx=%s anchor_phase=%s)",
-                j.id, statn, names, j.anchor_idx, j.anchor_phase,
+                "journey %s: %s not resolvable within leg (anchor_idx=%s anchor_phase=%s)",
+                j.id, result.station_name, j.anchor_idx, j.anchor_phase,
             )
-            if j.anchor_phase == "segment" and j.anchor_idx >= len(names) - 2:
+            if j.anchor_phase == "segment" and j.anchor_idx >= len(j.leg.stations) - 2:
                 await self._complete_leg(j)
                 return True
-            # Keep the boarding timestamp as the start of the unlogged path.
-            # This feed can report the selected train outside our leg several
-            # times while it approaches the boarding station. Resetting this
-            # clock on every such poll shrinks the subsequent segment to about
-            # one second, which down-samples Tmap's curved shape to endpoints.
             j.last_status = TrainStatus(
-                train_no=j.train_no, station_name=train.get("statnNm", "?"),
+                train_no=j.train_no, station_name=result.station_name,
                 station_index=None, status="before_leg",
                 lat=j.leg.stations[0].lat, lon=j.leg.stations[0].lon,
                 updated_at=int(now),
             )
             return True
 
-        idx = names.index(statn)
-        # trainSttus: 0 approaching, 1 arrived, 2 departed, 3 departed previous
-        if sttus in ("0", "1"):
-            new_idx, new_phase, status = idx, "station", ("approaching" if sttus == "0" else "arrived")
-            reached = idx  # arrival at idx
-        elif sttus == "2":
+        idx = result.leg_index
+        if result.status in ("approaching", "arrived"):
+            new_idx, new_phase, status = idx, "station", result.status
+            reached = idx
+        else:  # "departed"
             new_idx, new_phase, status = idx, "segment", "departed"
-            reached = idx  # we may have missed the arrival poll for idx
-        else:  # "3": running toward statn -> in segment before idx
-            new_idx, new_phase, status = max(idx - 1, 0), "segment", "between"
-            reached = idx - 1
+            reached = idx
         log.debug(
-            "journey %s: idx=%d sttus=%s -> new_idx=%d new_phase=%s status=%s reached=%d logged_idx=%d",
-            j.id, idx, sttus, new_idx, new_phase, status, reached, j.logged_idx,
+            "journey %s: idx=%d status=%s -> new_idx=%d new_phase=%s reached=%d logged_idx=%d",
+            j.id, idx, result.status, new_idx, new_phase, reached, j.logged_idx,
         )
 
         if reached > j.logged_idx:
             self._log_segment(j, reached, now)
 
         if (new_idx, new_phase) != (j.anchor_idx, j.anchor_phase):
-            log.debug(
-                "journey %s: anchor %s/%s -> %s/%s",
-                j.id, j.anchor_idx, j.anchor_phase, new_idx, new_phase,
-            )
+            log.debug("journey %s: anchor %s/%s -> %s/%s", j.id, j.anchor_idx, j.anchor_phase, new_idx, new_phase)
             j.anchor_idx, j.anchor_phase, j.anchor_time = new_idx, new_phase, now
 
         lat, lon, _ = self._interpolate(j, now)
         j.last_status = TrainStatus(
-            train_no=j.train_no, station_name=train.get("statnNm", "?"),
+            train_no=j.train_no, station_name=result.station_name,
             station_index=idx, status=status, lat=lat, lon=lon, updated_at=int(now),
         )
 
-        arrived_at_end = idx >= len(names) - 1 and sttus in ("0", "1")
+        arrived_at_end = idx >= len(j.leg.stations) - 1 and result.status in ("approaching", "arrived")
         if arrived_at_end:
             log.debug("journey %s: reached end station idx=%d, completing leg", j.id, idx)
             await self._complete_leg(j)

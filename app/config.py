@@ -10,8 +10,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BASE_DIR / ".env", extra="ignore")
 
     tmap_app_key: str = ""
-    seoul_api_key: str = ""
-    seoul_api_key_two: str = ""
+    subway_api_url: str = "http://localhost:8000"
     reitti_url: str = ""
     reitti_token: str = ""
 
