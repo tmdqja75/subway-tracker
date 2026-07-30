@@ -84,6 +84,7 @@ async def routes(request: Request, body: RouteSearchRequest):
             "route cache hit start=%s/%s end=%s/%s",
             cache_key[0], cache_key[1], cache_key[2], cache_key[3],
         )
+        db.touch_cached_route_options(*cache_key)
         return [it.model_dump() for it in cached]
     try:
         route_search = await search_routes_with_raw_response(
