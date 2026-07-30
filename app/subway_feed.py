@@ -14,6 +14,9 @@ from dataclasses import dataclass
 
 import httpx
 
+from .models import SubwayLeg
+from .stations import normalize_name
+
 log = logging.getLogger(__name__)
 
 
@@ -116,3 +119,43 @@ async def fetch_line_snapshot(base_url: str, line_id: str) -> list[StationSnapsh
                 continue
             return _parse_snapshot(payload)
     raise SubwayApiError(f"lineId={line_id}: {last_error}")
+
+
+def _find_all(snapshot: list[StationSnapshot], name: str) -> list[int]:
+    target = normalize_name(name)
+    return [i for i, s in enumerate(snapshot) if normalize_name(s.name) == target]
+
+
+def _leg_station_indices(snapshot: list[StationSnapshot], leg: SubwayLeg) -> list[int | None]:
+    """Resolve every leg station name to a snapshot index.
+
+    Only 성수/신도림 (2호선's branch junctions) occur twice in a snapshot.
+    Unambiguous names resolve directly; an ambiguous one is anchored to
+    whichever of its occurrences sits closest (by snapshot index) to any
+    *other*, already-unambiguous station in this same leg — not just the
+    previous one, since the ambiguous station can be the leg's first stop.
+    """
+    all_matches = [_find_all(snapshot, station.name) for station in leg.stations]
+    resolved: list[int | None] = [m[0] if len(m) == 1 else None for m in all_matches]
+
+    for i, matches in enumerate(all_matches):
+        if len(matches) <= 1:
+            continue
+        anchors = [idx for idx in resolved if idx is not None]
+        if not anchors:
+            resolved[i] = matches[0]
+            continue
+        resolved[i] = min(matches, key=lambda cand: min(abs(cand - anchor) for anchor in anchors))
+
+    return resolved
+
+
+def _leg_direction(line_key: str, indices: list[int | None]) -> int | None:
+    """+1 (dn) or -1 (up): whichever direction reaches indices[1] from
+    indices[0] in one _step hop. None if unresolved or not one hop apart."""
+    if len(indices) < 2 or indices[0] is None or indices[1] is None:
+        return None
+    for direction in (1, -1):
+        if _step(line_key, indices[0], direction) == indices[1]:
+            return direction
+    return None

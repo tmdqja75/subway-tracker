@@ -86,3 +86,59 @@ def test_stations_between_counts_through_line_2_wrap():
     # From index 40, dn-ward to index 2 must cross the 42->0 seam:
     # 40->41 (1) ->42 (2) ->0 (3, wrap) ->1 (4) ->2 (5).
     assert _stations_between("2호선", 40, 2, 1) == 5
+
+
+from app.models import LegStation, SubwayLeg
+from app.subway_feed import StationSnapshot, _leg_direction, _leg_station_indices
+
+
+def _snap(*names: str) -> list[StationSnapshot]:
+    return [StationSnapshot(name=n, up=[], dn=[]) for n in names]
+
+
+def _leg(line_key: str, *names: str) -> SubwayLeg:
+    return SubwayLeg(
+        route=f"수도권{line_key}",
+        line_key=line_key,
+        section_time=60 * (len(names) - 1),
+        start_name=names[0],
+        end_name=names[-1],
+        stations=[LegStation(index=i, name=n, lat=0.0, lon=0.0) for i, n in enumerate(names)],
+    )
+
+
+def test_leg_station_indices_resolves_plain_names():
+    snapshot = _snap("연천", "전곡", "청량리", "구로")
+    leg = _leg("1호선", "전곡", "청량리", "구로")
+
+    assert _leg_station_indices(snapshot, leg) == [1, 2, 3]
+
+
+def test_leg_station_indices_returns_none_for_unresolvable_name():
+    snapshot = _snap("연천", "전곡")
+    leg = _leg("1호선", "전곡", "없는역")
+
+    assert _leg_station_indices(snapshot, leg) == [1, None]
+
+
+def test_leg_station_indices_disambiguates_line_2_branch_junction():
+    # 성수 appears twice: index 0 (main loop) and index 6 (지선 branch start).
+    snapshot = _snap("성수", "건대입구", "뚝섬", "x", "y", "z", "성수 (지선)", "용답", "신설동")
+    leg = _leg("2호선", "성수 (지선)", "용답", "신설동")
+
+    assert _leg_station_indices(snapshot, leg) == [6, 7, 8]
+
+
+def test_leg_direction_detects_dn_and_up():
+    snapshot = _snap("A", "B", "C")
+
+    assert _leg_direction("3호선", [0, 1]) == 1
+    assert _leg_direction("3호선", [2, 1]) == -1
+
+
+def test_leg_direction_none_when_stations_are_not_one_hop_apart():
+    assert _leg_direction("3호선", [0, 2]) is None
+
+
+def test_leg_direction_none_when_first_station_unresolved():
+    assert _leg_direction("3호선", [None, 1]) is None
