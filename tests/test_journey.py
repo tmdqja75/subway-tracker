@@ -12,6 +12,7 @@ from app.db import Database
 from app.journey import ActiveJourney, JourneyManager
 from app.models import Itinerary, JourneyState, LegStation, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
+from app.subway_feed import LegTrainStatus
 
 
 def make_itinerary(shape: list | None = None) -> Itinerary:
@@ -55,7 +56,7 @@ def test_history_estimated_column_migrates_existing_journeys(tmp_path: Path):
 @pytest.fixture
 def manager(tmp_path: Path, monkeypatch):
     settings = Settings(
-        seoul_api_key="k", tmap_app_key="k",
+        subway_api_url="http://subway.test", tmap_app_key="k",
         reitti_url="http://reitti.test", reitti_token="t",
         poll_interval_seconds=0, db_path=tmp_path / "t.db",
         _env_file=None,
@@ -98,14 +99,14 @@ async def test_starting_next_journey_cancels_existing_active_journey(manager, st
 async def test_full_leg_completes_and_pushes(manager, monkeypatch):
     # scripted feed: train 3001 walks the leg then arrives at the end station
     feed = [
-        [{"trainNo": "3001", "statnNm": "양재", "trainSttus": "1"}],
-        [{"trainNo": "3001", "statnNm": "양재", "trainSttus": "2"}],   # departed
-        [{"trainNo": "3001", "statnNm": "매봉", "trainSttus": "1"}],
-        [{"trainNo": "3001", "statnNm": "도곡", "trainSttus": "0"}],   # approaching end
+        LegTrainStatus(leg_index=0, status="arrived", station_name="양재"),
+        LegTrainStatus(leg_index=0, status="departed", station_name="양재"),
+        LegTrainStatus(leg_index=1, status="arrived", station_name="매봉"),
+        LegTrainStatus(leg_index=2, status="approaching", station_name="도곡"),
     ]
     calls = iter(feed)
 
-    async def fake_positions(key, line):
+    async def fake_locate_train(base_url, leg, train_no):
         return next(calls, feed[-1])
 
     pushed = []
@@ -114,7 +115,7 @@ async def test_full_leg_completes_and_pushes(manager, monkeypatch):
         pushed.extend(points)
         return len(points)
 
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
     monkeypatch.setattr(journey_mod, "push_points", fake_push)
 
     j = await manager.start_journey(make_itinerary())
@@ -343,13 +344,13 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
         [37.4909, 127.0553],           # 도곡
     ]
     feed = [
-        [{"trainNo": "3001", "statnNm": "양재", "trainSttus": "2"}],
-        [{"trainNo": "3001", "statnNm": "매봉", "trainSttus": "1"}],  # arrival -> log segment
-        [{"trainNo": "3001", "statnNm": "도곡", "trainSttus": "1"}],
+        LegTrainStatus(leg_index=0, status="departed", station_name="양재"),
+        LegTrainStatus(leg_index=1, status="arrived", station_name="매봉"),  # arrival -> log segment
+        LegTrainStatus(leg_index=2, status="arrived", station_name="도곡"),
     ]
     calls = iter(feed)
 
-    async def fake_positions(key, line):
+    async def fake_locate_train(base_url, leg, train_no):
         return next(calls, feed[-1])
 
     pushed = []
@@ -358,7 +359,7 @@ async def test_arrivals_log_linestring_path(manager, monkeypatch):
         pushed.extend(points)
         return len(points)
 
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
     monkeypatch.setattr(journey_mod, "push_points", fake_push)
 
     # advance the clock 5s per lookup so points don't collide on epoch seconds
@@ -395,15 +396,15 @@ async def test_waiting_for_train_does_not_reset_linestring_log_clock(manager, mo
         [37.4909, 127.0553],
     ]
 
-    async def fake_positions(key, line):
-        return [{"trainNo": "3001", "statnNm": "개포동", "trainSttus": "1"}]
+    async def fake_locate_train(base_url, leg, train_no):
+        return LegTrainStatus(leg_index=None, status="arrived", station_name="개포동")
 
     class FakeTime:
         @staticmethod
         def time():
             return 1_000_040.0
 
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
     monkeypatch.setattr(journey_mod, "time", FakeTime)
 
     j = await manager.start_journey(make_itinerary(shape=shape))
@@ -496,10 +497,10 @@ async def test_transfer_walk_linestring_logged_before_next_subway_leg(manager, m
 
 
 async def test_missed_train_returns_to_picker(manager, monkeypatch):
-    async def fake_positions(key, line):
-        return []
+    async def fake_locate_train(base_url, leg, train_no):
+        return None
 
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
 
     j = await manager.start_journey(make_itinerary())
     await manager.board("9999")
@@ -566,7 +567,7 @@ def test_short_segments_do_not_spend_entire_segment_in_fast_poll_window(manager,
     assert manager._next_poll_delay(j) == 5
 
 
-async def test_realtime_tick_skips_seoul_fetch_until_next_poll_deadline(manager, monkeypatch):
+async def test_realtime_tick_skips_subway_feed_fetch_until_next_poll_deadline(manager, monkeypatch):
     manager.settings.poll_interval_seconds = 5
     calls = []
 
@@ -577,12 +578,12 @@ async def test_realtime_tick_skips_seoul_fetch_until_next_poll_deadline(manager,
         def time():
             return FakeTime._t
 
-    async def fake_positions(key, line):
+    async def fake_locate_train(base_url, leg, train_no):
         calls.append(FakeTime._t)
-        return [{"trainNo": "3001", "statnNm": "양재", "trainSttus": "2"}]
+        return LegTrainStatus(leg_index=0, status="departed", station_name="양재")
 
     monkeypatch.setattr(journey_mod, "time", FakeTime)
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
 
     j = ActiveJourney(1, make_itinerary())
     j.state = JourneyState.ON_TRAIN
@@ -612,11 +613,11 @@ async def test_missing_train_fallback_is_based_on_elapsed_time(manager, monkeypa
         def time():
             return FakeTime._t
 
-    async def fake_positions(key, line):
-        return []
+    async def fake_locate_train(base_url, leg, train_no):
+        return None
 
     monkeypatch.setattr(journey_mod, "time", FakeTime)
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
 
     j = ActiveJourney(1, make_itinerary())
     j.state = JourneyState.ON_TRAIN
@@ -783,8 +784,8 @@ async def test_resumed_onboard_history_keeps_live_anchor_and_does_not_replay_bac
         def time():
             return FakeTime._t
 
-    async def fake_positions(key, line):
-        return [{"trainNo": "3001", "statnNm": "매봉", "trainSttus": "2"}]
+    async def fake_locate_train(base_url, leg, train_no):
+        return LegTrainStatus(leg_index=1, status="departed", station_name="매봉")
 
     monkeypatch.setattr(journey_mod, "time", FakeTime)
     monkeypatch.setattr(manager, "_start_tracker", lambda: None)
@@ -802,7 +803,7 @@ async def test_resumed_onboard_history_keeps_live_anchor_and_does_not_replay_bac
     resumed = JourneyManager(manager.db, manager.settings)
     monkeypatch.setattr(resumed, "_start_tracker", lambda: None)
     monkeypatch.setattr(resumed, "_start_push", lambda *args, **kwargs: None)
-    monkeypatch.setattr(journey_mod, "fetch_positions", fake_positions)
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
     resumed.resume_from_db()
     assert resumed.active is not None
 
@@ -816,10 +817,10 @@ async def test_resumed_onboard_history_keeps_live_anchor_and_does_not_replay_bac
     assert resumed.active.anchor_idx == 1
     assert resumed.active.anchor_phase == "segment"
 
-    async def at_end(key, line):
-        return [{"trainNo": "3001", "statnNm": "도곡", "trainSttus": "1"}]
+    async def at_end(base_url, leg, train_no):
+        return LegTrainStatus(leg_index=2, status="arrived", station_name="도곡")
 
-    monkeypatch.setattr(journey_mod, "fetch_positions", at_end)
+    monkeypatch.setattr(journey_mod, "locate_train", at_end)
     FakeTime._t = 1_000_120.0
     await resumed._realtime_update(resumed.active)
 
