@@ -231,3 +231,63 @@ async def test_locate_train_marks_leg_index_none_when_train_has_run_past_the_leg
 
     assert result.leg_index is None
     assert result.status == "arrived"
+
+
+from app.subway_feed import fetch_arrivals
+
+
+@respx.mock
+async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}]),
+                ("B", [], [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}]),
+                ("C", [], []),
+                ("D", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "C", "D")
+
+    trains = await fetch_arrivals("http://subway.test", leg)
+
+    assert [t.train_no for t in trains] == ["near", "far"]
+    assert [t.stations_away for t in trains] == [1, 2]
+    assert trains[0].is_express is True
+    assert trains[0].stations_away_estimated is False
+    assert trains[0].eta_seconds == 0
+
+
+@respx.mock
+async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposite_direction(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [], []),
+                (
+                    "B",
+                    [{"status": "도착", "type": "일반", "dest": "A", "no": "opposite"}],
+                    [{"status": "출발", "type": "일반", "dest": "D", "no": "already-left"}],
+                ),
+                ("C", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "B", "C")
+
+    trains = await fetch_arrivals("http://subway.test", leg)
+
+    assert trains == []
+
+
+@respx.mock
+async def test_fetch_arrivals_returns_empty_for_uncovered_line(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {})
+    leg = _leg("정체불명선", "A", "B")
+
+    assert await fetch_arrivals("http://subway.test", leg) == []

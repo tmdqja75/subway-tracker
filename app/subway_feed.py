@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import httpx
 
 from .lines import LINE_KEY_TO_API_ID
-from .models import SubwayLeg
+from .models import ArrivingTrain, SubwayLeg
 from .stations import normalize_name
 
 log = logging.getLogger(__name__)
@@ -205,3 +205,45 @@ async def locate_train(base_url: str, leg: SubwayLeg, train_no: str) -> LegTrain
         # as unreachable so journey.py never indexes past leg.stations.
         leg_index = None
     return LegTrainStatus(leg_index=leg_index, status=status, station_name=snapshot[raw_idx].name)
+
+
+async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[ArrivingTrain]:
+    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
+    if line_id is None:
+        return []
+    snapshot = await fetch_line_snapshot(base_url, line_id)
+    line_key = leg.line_key or ""
+
+    indices = _leg_station_indices(snapshot, leg)
+    direction = _leg_direction(line_key, indices)
+    boarding_idx = indices[0] if indices else None
+    if direction is None or boarding_idx is None:
+        return []
+
+    ranked: list[tuple[int, TrainEntry]] = []
+    for raw_idx, station in enumerate(snapshot):
+        bucket = station.dn if direction == 1 else station.up
+        for entry in bucket:
+            if raw_idx == boarding_idx and entry.status == "출발":
+                continue  # already left the boarding station
+            distance = _stations_between(line_key, raw_idx, boarding_idx, direction)
+            if distance is None:
+                continue  # not behind the boarding station in this direction
+            ranked.append((distance, entry))
+
+    ranked.sort(key=lambda pair: pair[0])
+    return [
+        ArrivingTrain(
+            train_no=entry.no,
+            line_name=line_key,
+            terminus=entry.dest,
+            direction_label=f"{entry.dest}행",
+            eta_seconds=0,
+            arrival_msg="운행 중",
+            stations_away=distance,
+            stations_away_estimated=False,
+            matches_direction=True,
+            is_express=entry.kind == "급행",
+        )
+        for distance, entry in ranked[:limit]
+    ]
