@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import httpx
 
 from .lines import LINE_KEY_TO_API_ID
-from .models import ArrivingTrain, SubwayLeg
+from .models import ArrivingTrain, OnboardTrain, SubwayLeg
 from .stations import normalize_name
 
 log = logging.getLogger(__name__)
@@ -247,3 +247,49 @@ async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[
         )
         for distance, entry in ranked[:limit]
     ]
+
+
+async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float) -> list[OnboardTrain]:
+    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
+    if line_id is None or len(leg.stations) < 2:
+        return []
+    snapshot = await fetch_line_snapshot(base_url, line_id)
+    line_key = leg.line_key or ""
+
+    indices = _leg_station_indices(snapshot, leg)
+    direction = _leg_direction(line_key, indices)
+    boarding_idx = indices[0] if indices else None
+    if direction is None or boarding_idx is None:
+        return []
+    last_leg_index = len(leg.stations) - 1
+
+    candidates: list[OnboardTrain] = []
+    for raw_idx, station in enumerate(snapshot):
+        bucket = station.dn if direction == 1 else station.up
+        for entry in bucket:
+            leg_index = _stations_between(line_key, boarding_idx, raw_idx, direction)
+            if leg_index is None:
+                continue
+            status = _STATUS_BY_RAW.get(entry.status, "approaching")
+            in_bounds = (
+                0 <= leg_index < last_leg_index
+                if status == "departed"
+                else 0 < leg_index < last_leg_index
+            )
+            if not in_bounds:
+                continue
+            candidates.append(
+                OnboardTrain(
+                    train_no=entry.no,
+                    line_name=line_key,
+                    terminus=entry.dest,
+                    direction_label=f"{entry.dest}행",
+                    station_name=station.name,
+                    station_index=leg_index,
+                    status=status,
+                    observed_at=int(now),
+                    matches_direction=True,
+                    is_express=entry.kind == "급행",
+                )
+            )
+    return candidates

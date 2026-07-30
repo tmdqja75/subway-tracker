@@ -291,3 +291,49 @@ async def test_fetch_arrivals_returns_empty_for_uncovered_line(monkeypatch):
     leg = _leg("정체불명선", "A", "B")
 
     assert await fetch_arrivals("http://subway.test", leg) == []
+
+
+from app.subway_feed import fetch_onboard_candidates
+
+
+@respx.mock
+async def test_fetch_onboard_candidates_includes_interior_arrived_and_departed_origin(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}]),
+                ("B", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}]),
+                ("C", [], []),
+                ("D", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "A", "B", "C", "D")
+
+    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+
+    assert {c.train_no: c.station_index for c in candidates} == {"left-origin": 0, "interior": 1}
+    assert all(c.observed_at == 1_000 for c in candidates)
+
+
+@respx.mock
+async def test_fetch_onboard_candidates_excludes_at_origin_arrived_and_at_or_past_alighting(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}]),
+                ("B", [], []),
+                ("C", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}]),
+                ("D", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}]),
+            ),
+        )
+    )
+    leg = _leg("3호선", "A", "B", "C", "D")
+
+    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+
+    assert [c.train_no for c in candidates] == ["at-penultimate"]
