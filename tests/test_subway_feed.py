@@ -142,3 +142,92 @@ def test_leg_direction_none_when_stations_are_not_one_hop_apart():
 
 def test_leg_direction_none_when_first_station_unresolved():
     assert _leg_direction("3호선", [None, 1]) is None
+
+
+from app.subway_feed import locate_train
+
+
+def _payload(*stations: tuple[str, list[dict], list[dict]]) -> dict:
+    return {
+        "isTimeTable": False,
+        "data": [{"stn": name, "up": up, "dn": dn} for name, up, dn in stations],
+    }
+
+
+@respx.mock
+async def test_locate_train_returns_leg_relative_index_and_status(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("원점역", [], []),
+                ("중간역", [], [{"status": "도착", "type": "일반", "dest": "종점역", "no": "3001"}]),
+                ("종점역", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "원점역", "중간역", "종점역")
+
+    result = await locate_train("http://subway.test", leg, "3001")
+
+    assert result.leg_index == 1
+    assert result.status == "arrived"
+    assert result.station_name == "중간역"
+
+
+@respx.mock
+async def test_locate_train_returns_none_when_train_not_in_feed(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(200, json=_payload(("원점역", [], []), ("종점역", [], [])))
+    )
+    leg = _leg("3호선", "원점역", "종점역")
+
+    assert await locate_train("http://subway.test", leg, "no-such-train") is None
+
+
+@respx.mock
+async def test_locate_train_marks_leg_index_none_when_outside_leg_span(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("이전역", [], [{"status": "출발", "type": "일반", "dest": "종점역", "no": "3001"}]),
+                ("원점역", [], []),
+                ("종점역", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "원점역", "종점역")
+
+    result = await locate_train("http://subway.test", leg, "3001")
+
+    assert result.leg_index is None
+    assert result.status == "departed"
+
+
+@respx.mock
+async def test_locate_train_marks_leg_index_none_when_train_has_run_past_the_leg(monkeypatch):
+    # The train is a real, resolvable distance from boarding_idx (not
+    # "unreachable" like the previous test) but that distance overshoots
+    # the leg's own final station — it must not come back as an in-bounds
+    # index, which would make journey.py index past the end of leg.stations.
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("원점역", [], []),
+                ("종점역", [], []),
+                ("다음역", [], [{"status": "도착", "type": "일반", "dest": "다다음역", "no": "3001"}]),
+            ),
+        )
+    )
+    leg = _leg("3호선", "원점역", "종점역")  # only 2 stations; index 2 is past it
+
+    result = await locate_train("http://subway.test", leg, "3001")
+
+    assert result.leg_index is None
+    assert result.status == "arrived"

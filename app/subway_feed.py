@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from .lines import LINE_KEY_TO_API_ID
 from .models import SubwayLeg
 from .stations import normalize_name
 
@@ -159,3 +160,48 @@ def _leg_direction(line_key: str, indices: list[int | None]) -> int | None:
         if _step(line_key, indices[0], direction) == indices[1]:
             return direction
     return None
+
+
+_STATUS_BY_RAW = {"접근": "approaching", "도착": "arrived", "출발": "departed"}
+
+
+@dataclass
+class LegTrainStatus:
+    leg_index: int | None  # None: on this line, but not resolvable within the leg's span
+    status: str  # "approaching" | "arrived" | "departed"
+    station_name: str
+
+
+def _flatten(snapshot: list[StationSnapshot]) -> dict[str, tuple[int, TrainEntry]]:
+    """First occurrence per train number, scanning both buckets at every station."""
+    found: dict[str, tuple[int, TrainEntry]] = {}
+    for idx, station in enumerate(snapshot):
+        for entry in (*station.up, *station.dn):
+            if entry.no and entry.no not in found:
+                found[entry.no] = (idx, entry)
+    return found
+
+
+async def locate_train(base_url: str, leg: SubwayLeg, train_no: str) -> LegTrainStatus | None:
+    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
+    if line_id is None:
+        return None
+    snapshot = await fetch_line_snapshot(base_url, line_id)
+    found = _flatten(snapshot).get(train_no)
+    if found is None:
+        return None
+    raw_idx, entry = found
+    status = _STATUS_BY_RAW.get(entry.status, "approaching")
+
+    indices = _leg_station_indices(snapshot, leg)
+    direction = _leg_direction(leg.line_key or "", indices)
+    boarding_idx = indices[0] if indices else None
+    if direction is None or boarding_idx is None:
+        return LegTrainStatus(leg_index=None, status=status, station_name=snapshot[raw_idx].name)
+
+    leg_index = _stations_between(leg.line_key or "", boarding_idx, raw_idx, direction)
+    if leg_index is not None and leg_index >= len(leg.stations):
+        # Resolvable, but past the leg's own final station — treat the same
+        # as unreachable so journey.py never indexes past leg.stations.
+        leg_index = None
+    return LegTrainStatus(leg_index=leg_index, status=status, station_name=snapshot[raw_idx].name)

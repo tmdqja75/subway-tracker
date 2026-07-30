@@ -32,6 +32,9 @@ SUBWAY_ID_TO_LINE = {
 
 LINE_TO_SUBWAY_ID = {v: k for k, v in SUBWAY_ID_TO_LINE.items()}
 
+# line_key -> subway feed's numeric lineId; filled in fully in Task 7's rewrite.
+LINE_KEY_TO_API_ID: dict[str, str] = {}
+
 _COVERED = set(SUBWAY_ID_TO_LINE.values())
 
 # Tmap route spellings that don't reduce to a covered name mechanically
