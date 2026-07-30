@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
 from .stations import normalize_name
-from .subway_feed import SubwayApiError, fetch_arrivals, fetch_onboard_candidates
+from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
 from .tmap import TmapError, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,14 @@ async def _fetch_leg_onboard(settings, leg):
     """Return already-onboard candidates for a covered subway leg."""
     try:
         return await fetch_onboard_candidates(settings.subway_api_url, leg, now=time.time())
+    except SubwayApiError as e:
+        raise HTTPException(502, str(e))
+
+
+async def _fetch_leg_context(settings, leg):
+    """Return station names before the boarding station, for the boarding-line diagram."""
+    try:
+        return await fetch_boarding_context(settings.subway_api_url, leg)
     except SubwayApiError as e:
         raise HTTPException(502, str(e))
 
@@ -136,7 +144,7 @@ async def arrivals(request: Request):
         raise HTTPException(404, "no active journey")
     leg = j.leg
     if not leg.line_key:
-        return {"covered": False, "trains": [], "already_onboard": []}
+        return {"covered": False, "trains": [], "already_onboard": [], "context_before": []}
     trains = await _fetch_leg_arrivals(settings, leg)
     try:
         already_onboard = await _fetch_leg_onboard(settings, leg)
@@ -147,10 +155,20 @@ async def arrivals(request: Request):
             leg.line_key, leg.start_name, error.status_code,
         )
         already_onboard = []
+    try:
+        context_before = await _fetch_leg_context(settings, leg)
+    except HTTPException as error:
+        log.warning(
+            "optional boarding-context lookup failed; returning arrivals without "
+            "context stations line=%s station=%s status=%s",
+            leg.line_key, leg.start_name, error.status_code,
+        )
+        context_before = []
     return {
         "covered": True,
         "trains": [train.model_dump() for train in trains],
         "already_onboard": [train.model_dump() for train in already_onboard],
+        "context_before": context_before,
     }
 
 

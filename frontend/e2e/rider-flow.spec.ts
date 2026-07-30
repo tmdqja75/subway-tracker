@@ -129,10 +129,11 @@ test("rider selects exact stations, starts a returned route, then boards only a 
   await expect.poll(() => state.startRequests.length).toBe(1);
   expect(state.startRequests[0]).toEqual({ itinerary: state.itineraries[0] });
 
-  await expect(page.getByRole("list", { name: "탑승 가능한 열차" })).toBeVisible();
+  await expect(page.getByText("교대")).toBeVisible();
   const train = page.getByRole("button", { name: /2207 열차/ });
   await expectNativeTouchTarget(train);
-  await expect(train).toContainText("진입");
+  await expect(train).toHaveAccessibleName(/접근 중/);
+  await expect(train).toContainText("성수행");
   await expect(page.getByRole("button", { name: /2208 열차/ })).toHaveCount(0);
   await expectNativeTouchTarget(page.getByRole("button", { name: "여정 취소" }));
   await train.click();

@@ -3,12 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 
 import { boardCurrentJourney, cancelCurrentJourney, getCurrentArrivals } from "../lib/api";
-import type {
-  ActiveJourneySnapshot,
-  ArrivingTrain,
-  CurrentArrivalsResponse,
-  OnboardTrain,
-} from "../lib/types";
+import { buildBoardingLine } from "../lib/boarding-line";
+import type { ActiveJourneySnapshot, CurrentArrivalsResponse } from "../lib/types";
+import { BoardingLine } from "./boarding-line";
 import { Button } from "./ui/button";
 
 type AwaitingBoardJourney = Extract<ActiveJourneySnapshot, { state: "awaiting_board" }>;
@@ -34,26 +31,6 @@ function isAbortError(error: unknown): boolean {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
-}
-
-function arrivalDisplay(train: ArrivingTrain): string {
-  if (train.stations_away === 0) {
-    return "진입";
-  }
-  if (train.stations_away !== null && train.stations_away > 0) {
-    return `${train.stations_away_estimated ? "약 " : ""}${train.stations_away}정거장 전`;
-  }
-  return train.arrival_msg;
-}
-
-function onboardStatusDisplay(train: OnboardTrain): string {
-  const status: Record<OnboardTrain["status"], string> = {
-    approaching: "접근 중",
-    arrived: "도착",
-    departed: "출발",
-    between: "역 사이 이동 중",
-  };
-  return `현재 ${train.station_name} · ${status[train.status]}`;
 }
 
 /**
@@ -225,10 +202,18 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
     }
   };
 
-  const eligibleTrains = arrivals?.trains.filter((train) => train.matches_direction) ?? [];
-  const eligibleOnboardTrains = arrivals?.already_onboard.filter((train) => train.matches_direction) ?? [];
-  const hasEligibleTrains = eligibleTrains.length > 0 || eligibleOnboardTrains.length > 0;
   const boardingLocked = boarding || boardSucceeded || cancelling || cancelSucceeded;
+  const boardingLine = arrivals
+    ? buildBoardingLine(
+        journey.leg.stations,
+        journey.leg.start,
+        arrivals.trains,
+        arrivals.already_onboard,
+        arrivals.context_before,
+      )
+    : null;
+  const hasSelectableTrains = (boardingLine?.trains.length ?? 0) > 0;
+  const hasRetroactiveTrain = boardingLine?.trains.some((train) => train.retroactive) ?? false;
 
   return (
     <div className="train-picker">
@@ -252,69 +237,31 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
             </Button>
           </div>
 
+          {boardingLine ? (
+            <BoardingLine
+              disabled={boardingLocked}
+              onSelect={(trainNo, retroactive) => void board(trainNo, retroactive)}
+              stations={boardingLine.stations}
+              trains={boardingLine.trains}
+            />
+          ) : null}
+
           {arrivalsLoading && arrivals === null ? <p className="train-picker__message" role="status">도착 열차를 확인하는 중이에요.</p> : null}
           {arrivalsError ? <p className="field-error" role="alert">{arrivalsError}</p> : null}
-          {!arrivalsLoading && arrivals !== null && !hasEligibleTrains ? (
+          {!arrivalsLoading && arrivals !== null && !hasSelectableTrains ? (
             <p className="train-picker__message" role="status">
               현재 진행 방향에 맞는 탑승 가능 열차가 없어요. 잠시 후 새로고침해 주세요.
             </p>
           ) : null}
-          {eligibleTrains.length > 0 ? (
-            <section className="train-picker__section">
-              <h3 className="train-picker__section-heading">탑승 가능한 열차</h3>
-              <ol aria-label="탑승 가능한 열차" className="train-picker__trains">
-                {eligibleTrains.map((train) => (
-                  <li key={train.train_no}>
-                    <button
-                      className="train-card"
-                      disabled={boardingLocked}
-                      onClick={() => void board(train.train_no, false)}
-                      type="button"
-                    >
-                      <span className="train-card__header">
-                        <span aria-level={3} className="train-card__number" role="heading">{train.train_no} 열차</span>
-                        {train.is_express ? <span className="train-card__express">급행</span> : null}
-                      </span>
-                      <span className="train-card__direction">{train.direction_label}</span>
-                      <span className="train-card__terminus">{train.terminus} 종착</span>
-                      <span className="train-card__arrival">{arrivalDisplay(train)}</span>
-                      <span className="train-card__action">
-                        {boardSucceeded ? "탑승 확인 중이에요…" : boarding ? "탑승을 시작하는 중이에요…" : "이 열차 탑승"}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            </section>
+          {hasRetroactiveTrain ? (
+            <p className="train-picker__message" role="status">
+              이미 출발했거나 탑승 중인 열차를 선택하면 이전 구간은 추정으로 기록돼요.
+            </p>
           ) : null}
-          {eligibleOnboardTrains.length > 0 ? (
-            <section className="train-picker__section train-picker__section--onboard">
-              <h3 className="train-picker__section-heading">이미 탑승한 열차</h3>
-              <ol aria-label="이미 탑승한 열차" className="train-picker__trains">
-                {eligibleOnboardTrains.map((train) => (
-                  <li key={train.train_no}>
-                    <button
-                      className="train-card train-card--onboard"
-                      disabled={boardingLocked}
-                      onClick={() => void board(train.train_no, true)}
-                      type="button"
-                    >
-                      <span className="train-card__header">
-                        <span aria-level={3} className="train-card__number" role="heading">{train.train_no} 열차</span>
-                        {train.is_express ? <span className="train-card__express">급행</span> : null}
-                      </span>
-                      <span className="train-card__direction">{train.direction_label}</span>
-                      <span className="train-card__terminus">{train.terminus} 종착</span>
-                      <span className="train-card__arrival">{onboardStatusDisplay(train)}</span>
-                      <span className="train-card__warning">이전 이동 기록은 추정으로 재구성됩니다.</span>
-                      <span className="train-card__action">
-                        {boardSucceeded ? "탑승 확인 중이에요…" : boarding ? "탑승을 시작하는 중이에요…" : "이 열차 탑승"}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ol>
-            </section>
+          {boardSucceeded ? (
+            <p className="train-picker__message" role="status">탑승 확인 중이에요…</p>
+          ) : boarding ? (
+            <p className="train-picker__message" role="status">탑승을 시작하는 중이에요…</p>
           ) : null}
         </>
       ) : (

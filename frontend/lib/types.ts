@@ -197,6 +197,8 @@ export interface CurrentArrivalsResponse {
   covered: boolean;
   trains: ArrivingTrain[];
   already_onboard: OnboardTrain[];
+  /** Station names before the boarding station, farthest to nearest (see /lib/boarding-line). */
+  context_before: string[];
 }
 
 export interface OkResponse {

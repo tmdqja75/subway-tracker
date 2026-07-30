@@ -293,6 +293,52 @@ async def test_fetch_arrivals_returns_empty_for_uncovered_line(monkeypatch):
     assert await fetch_arrivals("http://subway.test", leg) == []
 
 
+from app.subway_feed import fetch_boarding_context
+
+
+@respx.mock
+async def test_fetch_boarding_context_returns_stations_before_boarding_farthest_to_nearest(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("W", [], []), ("X", [], []), ("Y", [], []),
+                ("Z", [], []), ("A", [], []), ("B", [], []),
+            ),
+        )
+    )
+    leg = _leg("3호선", "Z", "A", "B")  # boarding at Z, travelling dn (Z -> A -> B)
+
+    context = await fetch_boarding_context("http://subway.test", leg)
+
+    assert context == ["W", "X", "Y"]
+
+
+@respx.mock
+async def test_fetch_boarding_context_truncates_near_the_line_start(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(("X", [], []), ("Y", [], []), ("Z", [], []), ("A", [], [])),
+        )
+    )
+    leg = _leg("3호선", "Y", "Z", "A")  # only X exists before Y
+
+    context = await fetch_boarding_context("http://subway.test", leg)
+
+    assert context == ["X"]
+
+
+@respx.mock
+async def test_fetch_boarding_context_returns_empty_for_uncovered_line(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {})
+    leg = _leg("정체불명선", "A", "B")
+
+    assert await fetch_boarding_context("http://subway.test", leg) == []
+
+
 from app.subway_feed import fetch_onboard_candidates
 
 

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, boardCurrentJourney, cancelCurrentJourney, getCurrentArrivals } from "../lib/api";
-import type { ActiveJourneySnapshot, CurrentArrivalsResponse } from "../lib/types";
+import type { ActiveJourneySnapshot, CurrentArrivalsResponse, LegStation } from "../lib/types";
 import { activeJourneySnapshot, arrivingTrain } from "../test/fixtures";
 import { TrainPicker } from "./train-picker";
 
@@ -15,6 +15,13 @@ vi.mock("../lib/api", async (importOriginal) => {
     getCurrentArrivals: vi.fn(),
   };
 });
+
+// A 7-station window (3 before/after) so both "stations away" arriving trains
+// and onboard trains at various segments have somewhere to be placed.
+const lineStations: LegStation[] = ["봉천", "서울대입구", "낙성대", "사당", "방배", "교대", "강남"].map(
+  (name, index) => ({ index, name, lat: 0, lon: 0 }),
+);
+const CURRENT_STATION = "사당";
 
 function deferred<T>() {
   let reject!: (reason?: unknown) => void;
@@ -31,7 +38,7 @@ function awaitingSnapshot(covered = true): Extract<ActiveJourneySnapshot, { stat
   return {
     ...activeJourneySnapshot,
     state: "awaiting_board",
-    leg: { ...activeJourneySnapshot.leg, covered },
+    leg: { ...activeJourneySnapshot.leg, covered, stations: lineStations, start: CURRENT_STATION, end: "강남" },
     train: null,
     tracking_mode: null,
     transfer: null,
@@ -53,7 +60,7 @@ afterEach(() => {
 describe("TrainPicker", () => {
   it("loads arrivals immediately and polls again every 15 seconds after each completed request", async () => {
     vi.useFakeTimers();
-    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [] });
+    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [], context_before: [] });
 
     render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={vi.fn()} />);
     await flushPromises();
@@ -86,86 +93,104 @@ describe("TrainPicker", () => {
     expect(secondSignal.aborted).toBe(false);
 
     await act(async () => {
-      second.resolve({ covered: true, trains: [{ ...arrivingTrain, train_no: "newest" }], already_onboard: [] });
+      second.resolve({ covered: true, trains: [{ ...arrivingTrain, train_no: "newest" }], already_onboard: [], context_before: [] });
       await Promise.resolve();
     });
     expect(screen.getByRole("button", { name: /newest/ })).toBeVisible();
 
     await act(async () => {
-      first.resolve({ covered: true, trains: [{ ...arrivingTrain, train_no: "stale" }], already_onboard: [] });
+      first.resolve({ covered: true, trains: [{ ...arrivingTrain, train_no: "stale" }], already_onboard: [], context_before: [] });
       await Promise.resolve();
     });
     expect(screen.queryByRole("button", { name: /stale/ })).not.toBeInTheDocument();
   });
 
-  it("renders only direction-matched train cards and preserves arrival-count accuracy qualifiers", async () => {
+  it("renders only direction-matched trains that fit the visible station window", async () => {
     vi.mocked(getCurrentArrivals).mockResolvedValue({
       covered: true,
       trains: [
-        { ...arrivingTrain, train_no: "entering", stations_away: 0, arrival_msg: "곧 도착" },
-        { ...arrivingTrain, train_no: "estimated", stations_away: 2, stations_away_estimated: true },
-        { ...arrivingTrain, train_no: "exact", stations_away: 1, stations_away_estimated: false },
+        { ...arrivingTrain, train_no: "entering", stations_away: 0 },
+        { ...arrivingTrain, train_no: "express-train", stations_away: 1, is_express: true },
         { ...arrivingTrain, train_no: "opposite", matches_direction: false, direction_label: "반대 방향" },
-        {
-          ...arrivingTrain,
-          train_no: "message-only",
-          stations_away: null,
-          arrival_msg: "곧 도착",
-          is_express: true,
-        },
+        { ...arrivingTrain, train_no: "too-far", stations_away: 5 },
+        { ...arrivingTrain, train_no: "message-only", stations_away: null, arrival_msg: "곧 도착" },
       ],
       already_onboard: [],
+      context_before: [],
     });
 
     render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={vi.fn()} />);
 
-    expect(await screen.findByRole("button", { name: /entering/ })).toHaveTextContent("진입");
-    expect(screen.getByRole("button", { name: /estimated/ })).toHaveTextContent("약 2정거장 전");
-    expect(screen.getByRole("button", { name: /exact/ })).toHaveTextContent("1정거장 전");
-    expect(screen.getByRole("button", { name: /message-only/ })).toHaveTextContent("곧 도착");
+    expect(await screen.findByRole("button", { name: /entering/ })).toHaveAccessibleName(/접근 중/);
+    expect(screen.getByRole("button", { name: /express-train/ })).toHaveAccessibleName(/급행/);
     expect(screen.queryByRole("button", { name: /opposite/ })).not.toBeInTheDocument();
-    expect(screen.getAllByText("성수행 - 구의방면")).toHaveLength(4);
-    expect(screen.getAllByText("성수 종착")).toHaveLength(4);
-    expect(screen.getByText("급행")).toBeVisible();
+    // "too-far" and "message-only" match direction but don't fit within the
+    // 3-station window (or have no reported distance), so they're not shown.
+    expect(screen.queryByRole("button", { name: /too-far/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /message-only/ })).not.toBeInTheDocument();
   });
 
-  it("renders a separately labelled onboard list and boards its train retroactively", async () => {
+  it("selects an onboard train directly from the line, boarding it retroactively", async () => {
     const onJourneyRefresh = vi.fn();
     vi.mocked(getCurrentArrivals).mockResolvedValue({
       covered: true,
-      trains: [arrivingTrain],
+      trains: [],
       already_onboard: [
         {
           train_no: "already-2221",
           line_name: "2호선",
           terminus: "성수",
           direction_label: "성수행 - 구의방면",
-          station_name: "역삼",
+          station_name: "서울대입구",
           station_index: 1,
-          status: "between",
+          status: "departed",
           observed_at: 1_783_000_000,
           matches_direction: true,
           is_express: false,
         },
       ],
+      context_before: [],
     });
     vi.mocked(boardCurrentJourney).mockResolvedValue({ ok: true });
 
     render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={onJourneyRefresh} />);
 
-    const arrivingList = await screen.findByRole("list", { name: "탑승 가능한 열차" });
-    const onboardList = screen.getByRole("list", { name: "이미 탑승한 열차" });
-    const onboardCard = screen.getByRole("button", { name: /already-2221/ });
-    expect(arrivingList).toContainElement(screen.getByRole("button", { name: /^2221 열차/ }));
-    expect(onboardList).toContainElement(onboardCard);
-    expect(onboardCard).toHaveTextContent("현재 역삼 · 역 사이 이동 중");
-    expect(onboardCard).toHaveTextContent("이전 이동 기록은 추정으로 재구성됩니다.");
+    const onboardButton = await screen.findByRole("button", { name: /already-2221/ });
+    expect(onboardButton).toHaveAccessibleName(/출발함/);
+    expect(screen.getByText("이미 출발했거나 탑승 중인 열차를 선택하면 이전 구간은 추정으로 기록돼요.")).toBeVisible();
 
-    fireEvent.click(onboardCard);
+    fireEvent.click(onboardButton);
     await waitFor(() =>
       expect(boardCurrentJourney).toHaveBeenCalledWith("already-2221", true, expect.any(AbortSignal)),
     );
     expect(onJourneyRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows stations and trains before the boarding station via context_before", async () => {
+    // Regression test: leg.stations only spans from the boarding station
+    // onward (it's 강남 -> 역삼 here, so leg.start "강남" is index 0 with no
+    // room "before" it). Without context_before, no arriving train could
+    // ever be placed and no "before" station would ever render.
+    const journey: Extract<ActiveJourneySnapshot, { state: "awaiting_board" }> = {
+      ...activeJourneySnapshot,
+      state: "awaiting_board",
+      leg: { ...activeJourneySnapshot.leg, covered: true },
+      train: null,
+      tracking_mode: null,
+      transfer: null,
+    };
+    vi.mocked(getCurrentArrivals).mockResolvedValue({
+      covered: true,
+      trains: [{ ...arrivingTrain, train_no: "entering-from-context", stations_away: 0 }],
+      already_onboard: [],
+      context_before: ["선릉", "삼성"],
+    });
+
+    render(<TrainPicker journey={journey} onJourneyRefresh={vi.fn()} />);
+
+    expect(await screen.findByText("선릉")).toBeVisible();
+    expect(screen.getByText("삼성")).toBeVisible();
+    expect(screen.getByRole("button", { name: /entering-from-context/ })).toBeVisible();
   });
 
   it("uses timer mode without requesting arrivals for an uncovered leg", () => {
@@ -207,7 +232,7 @@ describe("TrainPicker", () => {
 
   it("locks boarding while a cancellation is pending or confirmed", async () => {
     const cancel = deferred<{ ok: true }>();
-    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [] });
+    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [], context_before: [] });
     vi.mocked(cancelCurrentJourney).mockReturnValueOnce(cancel.promise);
     render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={vi.fn()} />);
 
@@ -236,7 +261,7 @@ describe("TrainPicker", () => {
 
   it("keeps boarding locked after success until a new journey leg is rendered", async () => {
     const board = deferred<{ ok: true }>();
-    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [] });
+    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [], context_before: [] });
     vi.mocked(boardCurrentJourney).mockReturnValueOnce(board.promise).mockResolvedValueOnce({ ok: true });
     const onJourneyRefresh = vi.fn();
     const { rerender } = render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={onJourneyRefresh} />);
@@ -276,7 +301,7 @@ describe("TrainPicker", () => {
     vi.mocked(boardCurrentJourney)
       .mockRejectedValueOnce(new ApiError("선택한 열차는 더 이상 탑승할 수 없어요.", 409))
       .mockResolvedValueOnce({ ok: true });
-    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [] });
+    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [], context_before: [] });
     render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /2221/ }));
@@ -306,7 +331,7 @@ describe("TrainPicker", () => {
     const board = deferred<{ ok: true }>();
     const onJourneyRefresh = vi.fn();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [] });
+    vi.mocked(getCurrentArrivals).mockResolvedValue({ covered: true, trains: [arrivingTrain], already_onboard: [], context_before: [] });
     vi.mocked(boardCurrentJourney).mockReturnValue(board.promise);
     const { unmount } = render(<TrainPicker journey={awaitingSnapshot()} onJourneyRefresh={onJourneyRefresh} />);
 

@@ -214,7 +214,7 @@ def test_arrivals_on_uncovered_leg_returns_both_empty_train_lists(tmp_path):
     response = TestClient(app).get("/api/journeys/current/arrivals")
 
     assert response.status_code == 200
-    assert response.json() == {"covered": False, "trains": [], "already_onboard": []}
+    assert response.json() == {"covered": False, "trains": [], "already_onboard": [], "context_before": []}
 
 
 def make_onboard_train(train_no: str = "onboard") -> OnboardTrain:
@@ -254,8 +254,12 @@ def test_arrivals_returns_stable_arrival_and_onboard_candidate_lists(tmp_path, m
         calls.append((base_url, current_leg, now))
         return [candidate]
 
+    async def fake_fetch_boarding_context(*args, **kwargs):
+        return ["역삼", "선릉"]
+
     monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
     monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
+    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
     monkeypatch.setattr("app.api.time.time", lambda: 1_234)
 
     response = TestClient(app).get("/api/journeys/current/arrivals")
@@ -265,6 +269,7 @@ def test_arrivals_returns_stable_arrival_and_onboard_candidate_lists(tmp_path, m
         "covered": True,
         "trains": [arrival.model_dump()],
         "already_onboard": [candidate.model_dump()],
+        "context_before": ["역삼", "선릉"],
     }
     assert calls == [("http://subway.test", leg, 1_234)]
 
@@ -290,8 +295,12 @@ def test_arrivals_keeps_normal_trains_when_optional_onboard_lookup_fails(
     async def failed_fetch_onboard_candidates(*args, **kwargs):
         raise SubwayApiError("onboard feed unavailable")
 
+    async def fake_fetch_boarding_context(*args, **kwargs):
+        return []
+
     monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
     monkeypatch.setattr("app.api.fetch_onboard_candidates", failed_fetch_onboard_candidates)
+    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
 
     with caplog.at_level("WARNING", logger="app.api"):
         response = TestClient(app).get("/api/journeys/current/arrivals")
@@ -301,8 +310,50 @@ def test_arrivals_keeps_normal_trains_when_optional_onboard_lookup_fails(
         "covered": True,
         "trains": [arrival.model_dump()],
         "already_onboard": [],
+        "context_before": [],
     }
     assert "optional onboard-candidate lookup failed" in caplog.text
+
+
+def test_arrivals_keeps_normal_trains_when_optional_context_lookup_fails(
+    tmp_path, monkeypatch, caplog
+):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    leg = make_itinerary().legs[0]
+    app.state.manager = SimpleNamespace(active=SimpleNamespace(leg=leg))
+    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
+    arrival = ArrivingTrain(
+        train_no="approaching", line_name="2호선", terminus="사당",
+        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
+        stations_away=1, stations_away_estimated=False,
+        matches_direction=True, is_express=False,
+    )
+
+    async def fake_fetch_arrivals(*args, **kwargs):
+        return [arrival]
+
+    async def fake_fetch_onboard_candidates(*args, **kwargs):
+        return []
+
+    async def failed_fetch_boarding_context(*args, **kwargs):
+        raise SubwayApiError("subway feed unavailable")
+
+    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
+    monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
+    monkeypatch.setattr("app.api.fetch_boarding_context", failed_fetch_boarding_context)
+
+    with caplog.at_level("WARNING", logger="app.api"):
+        response = TestClient(app).get("/api/journeys/current/arrivals")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "covered": True,
+        "trains": [arrival.model_dump()],
+        "already_onboard": [],
+        "context_before": [],
+    }
+    assert "optional boarding-context lookup failed" in caplog.text
 
 
 def test_retroactive_board_still_fails_when_onboard_lookup_fails(tmp_path, monkeypatch):
@@ -384,10 +435,14 @@ def test_retroactive_board_rejects_candidate_that_disappeared_since_listing(tmp_
         calls["onboard"] += 1
         return [candidate] if calls["onboard"] == 1 else []
 
+    async def fake_fetch_boarding_context(*args, **kwargs):
+        return []
+
     app.state.manager = Manager()
     app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
     monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
     monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
+    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
     client = TestClient(app)
 
     listing = client.get("/api/journeys/current/arrivals")

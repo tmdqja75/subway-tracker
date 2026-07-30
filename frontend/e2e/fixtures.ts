@@ -325,7 +325,7 @@ export async function installMockBackend(page: Page, state: MockApiState) {
     }
     if (request.method() === "GET" && pathname === "/api/journeys/current/arrivals") {
       state.arrivalsRequests += 1;
-      await json(route, { covered: true, trains: arrivals, already_onboard: [] });
+      await json(route, { covered: true, trains: arrivals, already_onboard: [], context_before: ["교대"] });
       return;
     }
     if (request.method() === "POST" && pathname === "/api/journeys/current/board") {
