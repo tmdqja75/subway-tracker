@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from .models import Itinerary, TrackPoint
+from .stations import normalize_name
 
 ROUTE_OPTIONS_CACHE_FORMAT_VERSION = "2"
 
@@ -140,6 +141,10 @@ class Database:
     ]:
         """Return the most-used and most-recent distinct persisted subway routes.
 
+        most_used only counts journeys actually taken. recent also counts
+        merely-searched routes (route_options_cache), so it reflects both
+        finished travel and simply searched travel.
+
         Itinerary JSON is historical data and may predate current validation, so
         malformed rows are ignored rather than making the history endpoint fail.
         """
@@ -203,13 +208,47 @@ class Database:
                 -item[1]["latest_id"],
             ),
         )
+
+        # recent: same routes as above keyed by normalized name (Tmap's raw
+        # leg names and the registry-normalized cache keys can differ in
+        # "역" suffix/whitespace for the same physical station), merged with
+        # route_options_cache so a search alone also counts as "recent".
+        recent_candidates: dict[tuple[str, str, str, str], tuple[int, int]] = {}
+        recent_routes: dict[tuple[str, str, str, str], tuple[str, str, str, str]] = {}
+
+        def consider(norm_key, event_at: tuple[int, int], route) -> None:
+            if event_at > recent_candidates.get(norm_key, (0, 0)):
+                recent_candidates[norm_key] = event_at
+                recent_routes[norm_key] = route
+
+        for route, group in groups.items():
+            start_name, start_line, end_name, end_line = route
+            norm_key = (
+                normalize_name(start_name), start_line,
+                normalize_name(end_name), end_line,
+            )
+            consider(norm_key, (group["latest_created_at"], group["latest_id"]), route)
+
+        for row in self.conn.execute(
+            "SELECT start_name, start_line, end_name, end_line, updated_at "
+            "FROM route_options_cache"
+        ):
+            route = (row["start_name"], row["start_line"], row["end_name"], row["end_line"])
+            norm_key = (
+                normalize_name(row["start_name"]), row["start_line"],
+                normalize_name(row["end_name"]), row["end_line"],
+            )
+            # cache rows have no journey id to tie-break with; 0 only wins
+            # ties against another cache row, never against a journey.
+            consider(norm_key, (row["updated_at"], 0), route)
+
         recent = sorted(
-            groups.items(),
-            key=lambda item: (-item[1]["latest_created_at"], -item[1]["latest_id"]),
+            recent_candidates.items(),
+            key=lambda item: (-item[1][0], -item[1][1]),
         )
         return (
             [route for route, _ in ranked],
-            [route for route, _ in recent],
+            [recent_routes[norm_key] for norm_key, _ in recent],
         )
 
     def get_cached_route_options(
@@ -251,6 +290,17 @@ class Database:
             "raw_response_json = excluded.raw_response_json, "
             "updated_at = excluded.updated_at",
             (start_name, start_line, end_name, end_line, payload, raw_tmap_response, now, now),
+        )
+        self.conn.commit()
+
+    def touch_cached_route_options(
+        self, start_name: str, start_line: str, end_name: str, end_line: str
+    ) -> None:
+        """Bump a cache-hit search's recency so repeat searches still count as recent."""
+        self.conn.execute(
+            "UPDATE route_options_cache SET updated_at = ? "
+            "WHERE start_name = ? AND start_line = ? AND end_name = ? AND end_line = ?",
+            (int(time.time()), start_name, start_line, end_name, end_line),
         )
         self.conn.commit()
 
