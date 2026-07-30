@@ -207,6 +207,38 @@ async def locate_train(base_url: str, leg: SubwayLeg, train_no: str) -> LegTrain
     return LegTrainStatus(leg_index=leg_index, status=status, station_name=snapshot[raw_idx].name)
 
 
+async def fetch_boarding_context(base_url: str, leg: SubwayLeg, window: int = 3) -> list[str]:
+    """Station names immediately before the boarding station, farthest to
+    nearest, for the boarding-line diagram's "before" segment.
+
+    leg.stations only spans from the boarding station onward (Tmap gives us
+    one leg per ride, not the whole physical line), so this walks the full
+    line snapshot backwards from boarding_idx instead. Empty (or shorter than
+    `window`) if the line/direction can't be resolved or the boarding station
+    is near the line's own end.
+    """
+    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
+    if line_id is None:
+        return []
+    snapshot = await fetch_line_snapshot(base_url, line_id)
+    line_key = leg.line_key or ""
+
+    indices = _leg_station_indices(snapshot, leg)
+    direction = _leg_direction(line_key, indices)
+    boarding_idx = indices[0] if indices else None
+    if direction is None or boarding_idx is None:
+        return []
+
+    names: list[str] = []
+    idx = boarding_idx
+    for _ in range(window):
+        idx = _step(line_key, idx, -direction)
+        if not (0 <= idx < len(snapshot)):
+            break
+        names.append(snapshot[idx].name)
+    return list(reversed(names))
+
+
 async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[ArrivingTrain]:
     line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
     if line_id is None:

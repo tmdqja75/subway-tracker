@@ -41,7 +41,7 @@ function onboard(overrides: Partial<OnboardTrain>): OnboardTrain {
 
 describe("buildBoardingLine", () => {
   it("windows to 3 stations before/after the current station", () => {
-    const line = buildBoardingLine(stations, "동대문역사문화공원", [], []);
+    const line = buildBoardingLine(stations, "동대문역사문화공원", [], [], []);
     expect(line?.stations.map((s) => s.name)).toEqual([
       "한성대입구", "혜화", "동대문", "동대문역사문화공원", "충무로", "명동", "회현",
     ]);
@@ -49,12 +49,12 @@ describe("buildBoardingLine", () => {
   });
 
   it("shrinks the window when fewer than 3 stations exist on either side", () => {
-    const line = buildBoardingLine(stations, "성신여대입구", [], []);
+    const line = buildBoardingLine(stations, "성신여대입구", [], [], []);
     expect(line?.stations.map((s) => s.name)).toEqual(["성신여대입구", "한성대입구", "혜화", "동대문"]);
   });
 
   it("returns null when the current station isn't part of the leg", () => {
-    expect(buildBoardingLine(stations, "존재하지않음", [], [])).toBeNull();
+    expect(buildBoardingLine(stations, "존재하지않음", [], [], [])).toBeNull();
   });
 
   it("drops non-direction-matched and unlocatable trains", () => {
@@ -63,6 +63,7 @@ describe("buildBoardingLine", () => {
       "동대문역사문화공원",
       [arriving({ matches_direction: false }), arriving({ stations_away: null })],
       [onboard({ station_index: 999 })],
+      [],
     );
     expect(line?.trains).toEqual([]);
   });
@@ -74,9 +75,10 @@ describe("buildBoardingLine", () => {
       "동대문역사문화공원",
       [arriving({ train_no: "4045", stations_away: 1 })],
       [],
+      [],
     );
     expect(line?.trains).toEqual([
-      { key: "arriving-4045-0", trainNo: "4045", destination: "오이도행", isExpress: false, state: "approaching", fromGapIndex: 1 },
+      { key: "arriving-4045-0", trainNo: "4045", destination: "오이도행", isExpress: false, state: "approaching", retroactive: false, fromGapIndex: 1 },
     ]);
   });
 
@@ -90,11 +92,36 @@ describe("buildBoardingLine", () => {
         onboard({ train_no: "departed-1", station_index: 2, status: "departed" }),
         onboard({ train_no: "approaching-1", station_index: 5, status: "approaching" }),
       ],
+      [],
     );
     expect(line?.trains).toEqual([
-      { key: "onboard-arrived-1-0", trainNo: "arrived-1", destination: "오이도행", isExpress: false, state: "arrived", atIndex: 2 },
-      { key: "onboard-departed-1-1", trainNo: "departed-1", destination: "오이도행", isExpress: false, state: "departed", fromGapIndex: 1 },
-      { key: "onboard-approaching-1-2", trainNo: "approaching-1", destination: "오이도행", isExpress: false, state: "approaching", fromGapIndex: 3 },
+      { key: "onboard-arrived-1-0", trainNo: "arrived-1", destination: "오이도행", isExpress: false, state: "arrived", retroactive: true, atIndex: 2 },
+      { key: "onboard-departed-1-1", trainNo: "departed-1", destination: "오이도행", isExpress: false, state: "departed", retroactive: true, fromGapIndex: 1 },
+      { key: "onboard-approaching-1-2", trainNo: "approaching-1", destination: "오이도행", isExpress: false, state: "approaching", retroactive: true, fromGapIndex: 3 },
+    ]);
+  });
+
+  it("prepends context-before names so trains near a leg's own first station can be placed", () => {
+    // Mirrors production: leg.stations starts AT the boarding station (index
+    // 0), so without context_before, currentIdx would always be 0 and no
+    // "before" segment could ever exist — this is the bug context_before fixes.
+    const legStartingAtBoarding: LegStation[] = ["동대문역사문화공원", "충무로"].map((name, index) => ({
+      index, name, lat: 0, lon: 0,
+    }));
+    const contextBefore = ["혜화", "동대문"]; // farthest -> nearest, per fetch_boarding_context's contract
+
+    const line = buildBoardingLine(
+      legStartingAtBoarding,
+      "동대문역사문화공원",
+      [arriving({ train_no: "entering", stations_away: 0 })],
+      [],
+      contextBefore,
+    );
+
+    expect(line?.stations.map((s) => s.name)).toEqual(["혜화", "동대문", "동대문역사문화공원", "충무로"]);
+    expect(line?.stations[2]).toEqual({ name: "동대문역사문화공원", isCurrent: true });
+    expect(line?.trains).toEqual([
+      { key: "arriving-entering-0", trainNo: "entering", destination: "오이도행", isExpress: false, state: "approaching", retroactive: false, fromGapIndex: 1 },
     ]);
   });
 });

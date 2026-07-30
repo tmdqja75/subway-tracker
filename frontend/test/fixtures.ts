@@ -133,4 +133,5 @@ export const arrivalsResponse: CurrentArrivalsResponse = {
   covered: true,
   trains: [arrivingTrain],
   already_onboard: [],
+  context_before: [],
 };

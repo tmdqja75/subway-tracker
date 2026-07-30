@@ -15,6 +15,8 @@ export interface BoardingLineTrain {
   destination: string;
   isExpress: boolean;
   state: BoardingLineTrainState;
+  /** True for a train sourced from `already_onboard`: boarding it needs the retroactive board flag. */
+  retroactive: boolean;
   /** Index into the windowed stations array. Set for an "arrived" train, sitting on that station's node. */
   atIndex?: number;
   /** Index into the windowed stations array of the segment's earlier station. Set for "approaching"/"departed". */
@@ -41,21 +43,32 @@ export interface BoardingLineData {
  * "between" status has no fraction rule from product either, so it's placed
  * at the segment midpoint. Upgrade both if the backend ever exposes finer
  * position data.
+ *
+ * `legStations` only spans from the boarding station onward — Tmap gives us
+ * one leg per ride, not the whole physical line — so `contextBefore` (from
+ * the arrivals response) supplies the station names before it. Those get
+ * negative synthetic indices; real station_index values are never negative,
+ * so they can't collide with an onboard train's placement.
  */
 export function buildBoardingLine(
   legStations: LegStation[],
   currentStationName: string,
   arrivingTrains: ArrivingTrain[],
   onboardTrains: OnboardTrain[],
+  contextBefore: string[],
 ): BoardingLineData | null {
-  const currentIdx = legStations.findIndex((station) => station.name === currentStationName);
+  const stationsWithContext: LegStation[] = [
+    ...contextBefore.map((name, i) => ({ index: i - contextBefore.length, name, lat: 0, lon: 0 })),
+    ...legStations,
+  ];
+  const currentIdx = stationsWithContext.findIndex((station) => station.name === currentStationName);
   if (currentIdx === -1) {
     return null;
   }
 
   const windowStart = Math.max(0, currentIdx - WINDOW);
-  const windowEnd = Math.min(legStations.length - 1, currentIdx + WINDOW);
-  const stations: BoardingLineStation[] = legStations.slice(windowStart, windowEnd + 1).map((station, i) => ({
+  const windowEnd = Math.min(stationsWithContext.length - 1, currentIdx + WINDOW);
+  const stations: BoardingLineStation[] = stationsWithContext.slice(windowStart, windowEnd + 1).map((station, i) => ({
     name: station.name,
     isCurrent: windowStart + i === currentIdx,
   }));
@@ -77,6 +90,7 @@ export function buildBoardingLine(
       destination: `${train.terminus}행`,
       isExpress: train.is_express,
       state: "approaching",
+      retroactive: false,
       fromGapIndex: fromAbs - windowStart,
     });
   });
@@ -85,7 +99,7 @@ export function buildBoardingLine(
     if (!train.matches_direction) {
       return;
     }
-    const stationAbs = legStations.findIndex((station) => station.index === train.station_index);
+    const stationAbs = stationsWithContext.findIndex((station) => station.index === train.station_index);
     if (stationAbs === -1) {
       return;
     }
@@ -95,6 +109,7 @@ export function buildBoardingLine(
       trainNo: train.train_no,
       destination: `${train.terminus}행`,
       isExpress: train.is_express,
+      retroactive: true,
     };
 
     if (train.status === "arrived") {
