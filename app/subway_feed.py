@@ -40,10 +40,11 @@ class StationSnapshot:
     dn: list[TrainEntry]
 
 
-# up = increasing snapshot index, dn = decreasing snapshot index: verified
-# against live traffic across every line, including every appended branch.
-# Only these two lines loop and need an explicit wrap rule; every other
-# line uses the plain +/-1 rule.
+# The source feed's up/dn labels generally map to decreasing/increasing
+# snapshot indices respectively. Line 2 is the exception: its labels run in
+# the opposite direction (up = increasing, dn = decreasing), verified against
+# live 내선/외선 circulation. Only these two lines loop and need an explicit
+# wrap rule; every other line uses the plain +/-1 rule.
 _LOOP_WRAP = {
     "2호선": {"forward_wrap": (42, 0), "backward_wrap": (0, 42)},
     "6호선": {"backward_wrap": (0, 5)},
@@ -162,6 +163,18 @@ def _leg_direction(line_key: str, indices: list[int | None]) -> int | None:
     return None
 
 
+def _train_bucket(line_key: str, station: StationSnapshot, direction: int) -> list[TrainEntry]:
+    """Return entries moving in a leg's snapshot-index direction.
+
+    The feed's up/dn labeling follows the original mapping on every line
+    except Line 2, whose circular 내선/외선 labels are inverted relative to
+    the snapshot order.
+    """
+    if line_key == "2호선":
+        return station.up if direction == 1 else station.dn
+    return station.dn if direction == 1 else station.up
+
+
 _STATUS_BY_RAW = {"접근": "approaching", "도착": "arrived", "출발": "departed"}
 
 
@@ -254,7 +267,7 @@ async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[
 
     ranked: list[tuple[int, TrainEntry]] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.up if direction == 1 else station.dn
+        bucket = _train_bucket(line_key, station, direction)
         for entry in bucket:
             if raw_idx == boarding_idx and entry.status == "출발":
                 continue  # already left the boarding station
@@ -297,7 +310,7 @@ async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float)
 
     candidates: list[OnboardTrain] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.up if direction == 1 else station.dn
+        bucket = _train_bucket(line_key, station, direction)
         for entry in bucket:
             leg_index = _stations_between(line_key, boarding_idx, raw_idx, direction)
             if leg_index is None:

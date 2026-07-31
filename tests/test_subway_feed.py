@@ -89,7 +89,7 @@ def test_stations_between_counts_through_line_2_wrap():
 
 
 from app.models import LegStation, SubwayLeg
-from app.subway_feed import StationSnapshot, _leg_direction, _leg_station_indices
+from app.subway_feed import StationSnapshot, _leg_direction, _leg_station_indices, _train_bucket
 
 
 def _snap(*names: str) -> list[StationSnapshot]:
@@ -142,6 +142,19 @@ def test_leg_direction_none_when_stations_are_not_one_hop_apart():
 
 def test_leg_direction_none_when_first_station_unresolved():
     assert _leg_direction("3호선", [None, 1]) is None
+
+
+def test_train_bucket_swaps_direction_only_for_line_2():
+    station = StationSnapshot(
+        name="A",
+        up=[TrainEntry(status="도착", kind="일반", dest="up", no="up")],
+        dn=[TrainEntry(status="도착", kind="일반", dest="dn", no="dn")],
+    )
+
+    assert _train_bucket("2호선", station, 1) == station.up
+    assert _train_bucket("2호선", station, -1) == station.dn
+    assert _train_bucket("3호선", station, 1) == station.dn
+    assert _train_bucket("3호선", station, -1) == station.up
 
 
 from app.subway_feed import locate_train
@@ -243,8 +256,8 @@ async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}], []),
-                ("B", [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}], []),
+                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}]),
+                ("B", [], [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}]),
                 ("C", [], []),
                 ("D", [], []),
             ),
@@ -262,6 +275,26 @@ async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
 
 
 @respx.mock
+async def test_fetch_arrivals_line_2_uses_the_swapped_up_bucket(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [{"status": "출발", "type": "일반", "dest": "C", "no": "line2-forward"}], []),
+                ("B", [], []),
+                ("C", [], []),
+            ),
+        )
+    )
+    leg = _leg("2호선", "B", "C")
+
+    trains = await fetch_arrivals("http://subway.test", leg)
+
+    assert [train.train_no for train in trains] == ["line2-forward"]
+
+
+@respx.mock
 async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposite_direction(monkeypatch):
     monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
     respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
@@ -271,8 +304,8 @@ async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposi
                 ("A", [], []),
                 (
                     "B",
-                    [{"status": "출발", "type": "일반", "dest": "D", "no": "already-left"}],
                     [{"status": "도착", "type": "일반", "dest": "A", "no": "opposite"}],
+                    [{"status": "출발", "type": "일반", "dest": "D", "no": "already-left"}],
                 ),
                 ("C", [], []),
             ),
@@ -349,8 +382,8 @@ async def test_fetch_onboard_candidates_includes_interior_arrived_and_departed_o
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}], []),
-                ("B", [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}], []),
+                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}]),
+                ("B", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}]),
                 ("C", [], []),
                 ("D", [], []),
             ),
@@ -371,10 +404,10 @@ async def test_fetch_onboard_candidates_excludes_at_origin_arrived_and_at_or_pas
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}], []),
+                ("A", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}]),
                 ("B", [], []),
-                ("C", [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}], []),
-                ("D", [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}], []),
+                ("C", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}]),
+                ("D", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}]),
             ),
         )
     )
@@ -383,3 +416,24 @@ async def test_fetch_onboard_candidates_excludes_at_origin_arrived_and_at_or_pas
     candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
 
     assert [c.train_no for c in candidates] == ["at-penultimate"]
+
+
+@respx.mock
+async def test_fetch_onboard_candidates_line_2_uses_the_swapped_up_bucket(monkeypatch):
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                ("A", [], []),
+                ("B", [{"status": "도착", "type": "일반", "dest": "D", "no": "line2-onboard"}], []),
+                ("C", [], []),
+                ("D", [], []),
+            ),
+        )
+    )
+    leg = _leg("2호선", "A", "B", "C", "D")
+
+    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+
+    assert [candidate.train_no for candidate in candidates] == ["line2-onboard"]
