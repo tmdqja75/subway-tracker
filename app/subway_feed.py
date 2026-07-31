@@ -40,7 +40,7 @@ class StationSnapshot:
     dn: list[TrainEntry]
 
 
-# up = decreasing snapshot index, dn = increasing snapshot index: verified
+# up = increasing snapshot index, dn = decreasing snapshot index: verified
 # against live traffic across every line, including every appended branch.
 # Only these two lines loop and need an explicit wrap rule; every other
 # line uses the plain +/-1 rule.
@@ -254,7 +254,7 @@ async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[
 
     ranked: list[tuple[int, TrainEntry]] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.dn if direction == 1 else station.up
+        bucket = station.up if direction == 1 else station.dn
         for entry in bucket:
             if raw_idx == boarding_idx and entry.status == "출발":
                 continue  # already left the boarding station
@@ -297,7 +297,7 @@ async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float)
 
     candidates: list[OnboardTrain] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.dn if direction == 1 else station.up
+        bucket = station.up if direction == 1 else station.dn
         for entry in bucket:
             leg_index = _stations_between(line_key, boarding_idx, raw_idx, direction)
             if leg_index is None:
