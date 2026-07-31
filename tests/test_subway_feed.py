@@ -243,8 +243,8 @@ async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}]),
-                ("B", [], [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}]),
+                ("A", [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}], []),
+                ("B", [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}], []),
                 ("C", [], []),
                 ("D", [], []),
             ),
@@ -271,8 +271,8 @@ async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposi
                 ("A", [], []),
                 (
                     "B",
-                    [{"status": "도착", "type": "일반", "dest": "A", "no": "opposite"}],
                     [{"status": "출발", "type": "일반", "dest": "D", "no": "already-left"}],
+                    [{"status": "도착", "type": "일반", "dest": "A", "no": "opposite"}],
                 ),
                 ("C", [], []),
             ),
@@ -349,8 +349,8 @@ async def test_fetch_onboard_candidates_includes_interior_arrived_and_departed_o
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}]),
-                ("B", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}]),
+                ("A", [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}], []),
+                ("B", [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}], []),
                 ("C", [], []),
                 ("D", [], []),
             ),
@@ -371,10 +371,10 @@ async def test_fetch_onboard_candidates_excludes_at_origin_arrived_and_at_or_pas
         return_value=httpx.Response(
             200,
             json=_payload(
-                ("A", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}]),
+                ("A", [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}], []),
                 ("B", [], []),
-                ("C", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}]),
-                ("D", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}]),
+                ("C", [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}], []),
+                ("D", [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}], []),
             ),
         )
     )
