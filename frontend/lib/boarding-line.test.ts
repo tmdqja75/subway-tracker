@@ -15,6 +15,7 @@ function arriving(overrides: Partial<ArrivingTrain>): ArrivingTrain {
     direction_label: "오이도행",
     eta_seconds: 60,
     arrival_msg: "1분 후 도착",
+    status: "approaching",
     stations_away: 0,
     stations_away_estimated: false,
     matches_direction: true,
@@ -73,12 +74,42 @@ describe("buildBoardingLine", () => {
     const line = buildBoardingLine(
       stations,
       "동대문역사문화공원",
-      [arriving({ train_no: "4045", stations_away: 1 })],
+      [arriving({ train_no: "4045", stations_away: 1, status: "approaching" })],
       [],
       [],
     );
     expect(line?.trains).toEqual([
       { key: "arriving-4045-0", trainNo: "4045", destination: "오이도행", isExpress: false, state: "approaching", retroactive: false, fromGapIndex: 1 },
+    ]);
+  });
+
+  it("places an arrived feed train on its reported station instead of in the preceding gap", () => {
+    // A train reported as arrived at 동대문 is one stop before the boarding
+    // station. It belongs on the 동대문 node, not in the 혜화→동대문 segment.
+    const line = buildBoardingLine(
+      stations,
+      "동대문역사문화공원",
+      [arriving({ train_no: "arrived-4045", stations_away: 1, status: "arrived" })],
+      [],
+      [],
+    );
+
+    expect(line?.trains).toEqual([
+      { key: "arriving-arrived-4045-0", trainNo: "arrived-4045", destination: "오이도행", isExpress: false, state: "arrived", retroactive: false, atIndex: 2 },
+    ]);
+  });
+
+  it("places an arrived train at the boarding station on the current node", () => {
+    const line = buildBoardingLine(
+      stations,
+      "동대문역사문화공원",
+      [arriving({ train_no: "at-platform", stations_away: 0, status: "arrived" })],
+      [],
+      [],
+    );
+
+    expect(line?.trains).toEqual([
+      { key: "arriving-at-platform-0", trainNo: "at-platform", destination: "오이도행", isExpress: false, state: "arrived", retroactive: false, atIndex: 3 },
     ]);
   });
 

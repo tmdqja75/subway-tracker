@@ -200,6 +200,10 @@ persist outside the container.
   destination. The server then polls the Seoul position API for that train
   number and interpolates lat/lon between station coordinates by elapsed time
   (interpolated points are marked lower-accuracy for Reitti).
+- On the **탑승** line, the source feed's station-relative state is retained:
+  an arrived train is shown on that station, an approaching train in the
+  preceding segment, and a departed train in the following segment. The view
+  does not present an arrived train as if it were still between stations.
 - The Seoul position feed provides only a current station-relative observation,
   not a historic departure/stop timeline. For a train selected after the
   origin, the tracker reconstructs the origin-to-current path from the leg's

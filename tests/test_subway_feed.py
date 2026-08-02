@@ -269,6 +269,7 @@ async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
 
     assert [t.train_no for t in trains] == ["near", "far"]
     assert [t.stations_away for t in trains] == [1, 2]
+    assert [t.status for t in trains] == ["arrived", "departed"]
     assert trains[0].is_express is True
     assert trains[0].stations_away_estimated is False
     assert trains[0].eta_seconds == 0
@@ -316,6 +317,39 @@ async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposi
     trains = await fetch_arrivals("http://subway.test", leg)
 
     assert trains == []
+
+
+@respx.mock
+async def test_fetch_arrivals_offers_terminal_train_that_will_turn_back(monkeypatch):
+    """At a line end, the feed can still label the arriving train inbound.
+
+    It is boardable after it turns around, so it must not be hidden merely
+    because it is in the direction-opposite bucket at the boarding station.
+    """
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"신분당선": "103"})
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "103"}).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload(
+                (
+                    "신사",
+                    [{"status": "도착", "type": "일반", "dest": "신사", "no": "4"}],
+                    [],
+                ),
+                ("논현", [], []),
+                ("신논현", [], []),
+            ),
+        )
+    )
+    leg = _leg("신분당선", "신사", "논현", "신논현")
+
+    trains = await fetch_arrivals("http://subway.test", leg)
+
+    assert [train.train_no for train in trains] == ["4"]
+    assert trains[0].direction_label == "회차 후 신논현 방면"
+    assert trains[0].arrival_msg == "회차 준비 중"
+    assert trains[0].status == "arrived"
+    assert trains[0].stations_away == 0
 
 
 @respx.mock

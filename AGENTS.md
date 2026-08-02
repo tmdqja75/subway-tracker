@@ -183,6 +183,10 @@ guessing a field name or shape when touching `tmap.py`/`seoul.py`.
 - Covered arrival cards must only expose `matches_direction === true`; never
   offer an opposite-direction fallback. Uncovered legs board with a null train
   in timer mode.
+- `ArrivingTrain.status` preserves the feed's station-relative state for the
+  boarding diagram: render `arrived` on its reported station node, `approaching`
+  in the preceding segment, and `departed` in the following segment. Do not
+  flatten every arrival into an in-between marker.
 - Keep an action success lock until the authoritative journey/leg snapshot
   changes. An in-flight flag alone permits duplicate actions during refresh.
 - `pushing` polling is frequent. Use stable journey/leg identity for map
