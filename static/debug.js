@@ -53,6 +53,8 @@ function renderOptions() {
 function renderJourney(journey) {
   ensureDebugMap();
   clearLayers();
+  const retryButton = $("debug-retry-reitti");
+  retryButton.disabled = !journey || !journey.can_retry;
 
   if (!journey) {
     $("debug-summary").innerHTML = "No journeys found in tracker.db.";
@@ -191,9 +193,41 @@ async function loadDebugLocations() {
   }
 }
 
+function selectedJourney() {
+  return journeys[Number($("journey-select").value)];
+}
+
+async function retrySelectedJourneyPush() {
+  const journey = selectedJourney();
+  if (!journey || !journey.can_retry) {
+    return;
+  }
+
+  const pointCount = journey.points.length;
+  const approved = window.confirm(
+    `여정 #${journey.journey_id}의 위치 ${pointCount}개를 Reitti 서버로 다시 전송합니다.\n\n`
+      + "SQLite에 전송 중 상태를 기록한 뒤, 보관된 위치 데이터를 Reitti로 다시 보냅니다. 계속할까요?",
+  );
+  if (!approved) return;
+
+  const retryButton = $("debug-retry-reitti");
+  retryButton.disabled = true;
+  $("debug-status").textContent = "Reitti 재전송을 요청하고 SQLite 상태를 갱신하고 있어요…";
+  try {
+    const response = await fetch(`/api/debug/journeys/${journey.journey_id}/retry-push`, { method: "POST" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await loadDebugLocations();
+    $("debug-status").textContent = "Reitti 재전송을 시작했어요. SQLite의 전송 상태를 새로고쳤습니다.";
+  } catch (error) {
+    $("debug-status").textContent = `Reitti 재전송을 시작하지 못했어요: ${error.message}`;
+    renderJourney(journey);
+  }
+}
+
 $("journey-select").addEventListener("change", (event) => {
   renderJourney(journeys[Number(event.target.value)]);
 });
 $("debug-refresh").addEventListener("click", loadDebugLocations);
+$("debug-retry-reitti").addEventListener("click", () => void retrySelectedJourneyPush());
 
 loadDebugLocations();

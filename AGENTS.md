@@ -70,17 +70,35 @@ retry state, and every `/api/*` contract. React owns only transient UI state.
 `useCurrentJourney` is the sole source for an active journey after reload;
 never introduce a second persisted journey state in the frontend.
 
-The completed dashboard's **"새 여정 시작하기"** action is the narrow
-presentation exception: it may locally reveal the initial station search only
-while the authoritative snapshot remains `completed`. It clears when the
-server reports a new non-completed state; it must not fabricate an idle
-snapshot. The eventual route start still uses `POST /api/journeys`.
+The completed dashboard's **"새 여정 시작하기"** action and a failed-transfer
+dashboard's **"데이터 나중에 다시 보내기"** action are narrow presentation
+exceptions: either may locally reveal the initial station search while the
+authoritative snapshot remains `completed` or `push_failed`. The latter does
+not retry or discard retained points; reload returns to the durable failed
+transfer. Clear this mode only when the server reports another state, and do
+not fabricate an idle snapshot. The eventual route start still uses
+`POST /api/journeys`; because the manager supports only one active journey, a
+new route cancels a prior `push_failed` journey.
+
+The static debug page is a separate diagnostic surface. Its Reitti resend
+button is enabled for every `push_failed` or `cancelled` journey returned by
+`GET /api/debug/locations` (`can_retry`), including zero-point records; it
+previews the selected journey's point count and uses a browser confirmation
+before calling `POST /api/debug/journeys/{journey_id}/retry-push`. Keep resend
+behavior on that manager/API path so `_start_push()` persists `pushing` plus
+transfer progress in SQLite before any outbound transmission. A cancelled
+record's debug resend must not resume its tracker or replace another active ride.
 
 The rider UI is a Next static export, not an SSR or standalone production
 Next server. `next.config.ts` rewrites are development-only. `Dockerfile`
 builds `frontend/out` in a Node stage, then the Python runtime copies that
 export and the retained debug assets into `/app/static`. `app.main` includes
 the API router before mounting root static files; preserve that order.
+
+Production Compose binds the app to `127.0.0.1:8081`. On this host, Tailscale
+Serve owns the tailnet HTTPS listener on port 8081 and proxies it to that
+loopback target; do not change the Compose binding to all interfaces, which
+prevents OrbStack from publishing the port after Tailscale has claimed it.
 
 Browser and install branding use Next's App Router metadata-file conventions:
 `frontend/app/icon.png` is the square favicon/manifest icon,
@@ -179,10 +197,16 @@ guessing a field name or shape when touching `tmap.py`/`seoul.py`.
 - Single active journey by design — `start_journey` cancels an existing
   non-completed journey. A completed journey is terminal history: preserve its
   database state when beginning the next journey so the debug view retains it.
-  Don't add multi-journey support without discussing scope first.
+  A `push_failed` journey can temporarily show the station search through
+  "데이터 나중에 다시 보내기", but beginning a route still cancels that failed
+  journey; don't add multi-journey support without discussing scope first.
 - Covered arrival cards must only expose `matches_direction === true`; never
   offer an opposite-direction fallback. Uncovered legs board with a null train
   in timer mode.
+- `ArrivingTrain.status` preserves the feed's station-relative state for the
+  boarding diagram: render `arrived` on its reported station node, `approaching`
+  in the preceding segment, and `departed` in the following segment. Do not
+  flatten every arrival into an in-between marker.
 - Keep an action success lock until the authoritative journey/leg snapshot
   changes. An in-flight flag alone permits duplicate actions during refresh.
 - `pushing` polling is frequent. Use stable journey/leg identity for map

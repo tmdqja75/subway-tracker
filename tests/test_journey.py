@@ -226,6 +226,67 @@ async def test_failed_push_exposes_details_and_retry_resends_all_points(manager,
     }
 
 
+async def test_debug_retry_push_resends_cancelled_journey_points(manager, monkeypatch):
+    pushed = []
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        pushed.extend(points)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    journey = await manager.start_journey(make_itinerary())
+    manager.db.add_point(journey.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    await manager.cancel()
+
+    await manager.retry_debug_push(journey.id)
+    assert manager._push_task is not None
+    await manager._push_task
+
+    assert pushed == [TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False)]
+    assert manager.db.get_journey(journey.id)["state"] == JourneyState.COMPLETED
+
+
+async def test_debug_retry_push_resends_failed_journey_points_without_active_tracker(manager, monkeypatch):
+    pushed = []
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        pushed.extend(points)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    journey_id = manager.db.create_journey(make_itinerary(), JourneyState.PUSH_FAILED)
+    manager.db.add_point(
+        journey_id,
+        0,
+        TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False),
+    )
+
+    await manager.retry_debug_push(journey_id)
+    assert manager._push_task is not None
+    await manager._push_task
+
+    assert pushed == [TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False)]
+    assert manager.db.get_journey(journey_id)["state"] == JourneyState.COMPLETED
+
+
+async def test_debug_retry_push_completes_a_cancelled_journey_without_points(manager, monkeypatch):
+    pushed = []
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        pushed.extend(points)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    journey_id = manager.db.create_journey(make_itinerary(), JourneyState.CANCELLED)
+
+    await manager.retry_debug_push(journey_id)
+    assert manager._push_task is not None
+    await manager._push_task
+
+    assert pushed == []
+    assert manager.db.get_journey(journey_id)["state"] == JourneyState.COMPLETED
+
+
 async def test_final_alight_starts_background_push_and_exposes_live_progress(manager, monkeypatch):
     first_point_sent = asyncio.Event()
     finish_push = asyncio.Event()

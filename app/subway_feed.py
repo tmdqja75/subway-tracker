@@ -40,10 +40,11 @@ class StationSnapshot:
     dn: list[TrainEntry]
 
 
-# up = increasing snapshot index, dn = decreasing snapshot index: verified
-# against live traffic across every line, including every appended branch.
-# Only these two lines loop and need an explicit wrap rule; every other
-# line uses the plain +/-1 rule.
+# The source feed's up/dn labels generally map to decreasing/increasing
+# snapshot indices respectively. Line 2 is the exception: its labels run in
+# the opposite direction (up = increasing, dn = decreasing), verified against
+# live 내선/외선 circulation. Only these two lines loop and need an explicit
+# wrap rule; every other line uses the plain +/-1 rule.
 _LOOP_WRAP = {
     "2호선": {"forward_wrap": (42, 0), "backward_wrap": (0, 42)},
     "6호선": {"backward_wrap": (0, 5)},
@@ -162,6 +163,18 @@ def _leg_direction(line_key: str, indices: list[int | None]) -> int | None:
     return None
 
 
+def _train_bucket(line_key: str, station: StationSnapshot, direction: int) -> list[TrainEntry]:
+    """Return entries moving in a leg's snapshot-index direction.
+
+    The feed's up/dn labeling follows the original mapping on every line
+    except Line 2, whose circular 내선/외선 labels are inverted relative to
+    the snapshot order.
+    """
+    if line_key == "2호선":
+        return station.up if direction == 1 else station.dn
+    return station.dn if direction == 1 else station.up
+
+
 _STATUS_BY_RAW = {"접근": "approaching", "도착": "arrived", "출발": "departed"}
 
 
@@ -252,32 +265,51 @@ async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[
     if direction is None or boarding_idx is None:
         return []
 
-    ranked: list[tuple[int, TrainEntry]] = []
+    ranked: list[tuple[int, TrainEntry, bool]] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.up if direction == 1 else station.dn
+        bucket = _train_bucket(line_key, station, direction)
         for entry in bucket:
             if raw_idx == boarding_idx and entry.status == "출발":
                 continue  # already left the boarding station
             distance = _stations_between(line_key, raw_idx, boarding_idx, direction)
             if distance is None:
                 continue  # not behind the boarding station in this direction
-            ranked.append((distance, entry))
+            ranked.append((distance, entry, False))
+
+    # At the physical end of a line, the upstream feed still labels a train
+    # arriving at the platform as inbound until it has completed its turnback.
+    # That train is boardable for this leg once it departs, so show it as a
+    # clearly labelled option. Do not generalize this to opposite-direction
+    # trains at ordinary stations.
+    preceding_idx = _step(line_key, boarding_idx, -direction)
+    at_terminal = not (0 <= preceding_idx < len(snapshot))
+    if at_terminal:
+        boarding = snapshot[boarding_idx]
+        forward_bucket = _train_bucket(line_key, boarding, direction)
+        reverse_bucket = boarding.dn if forward_bucket is boarding.up else boarding.up
+        for entry in reverse_bucket:
+            if (
+                entry.status in {"접근", "도착"}
+                and normalize_name(entry.dest) == normalize_name(boarding.name)
+            ):
+                ranked.append((0, entry, True))
 
     ranked.sort(key=lambda pair: pair[0])
     return [
         ArrivingTrain(
             train_no=entry.no,
             line_name=line_key,
-            terminus=entry.dest,
-            direction_label=f"{entry.dest}행",
+            terminus=leg.end_name if turnback else entry.dest,
+            direction_label=(f"회차 후 {leg.end_name} 방면" if turnback else f"{entry.dest}행"),
             eta_seconds=0,
-            arrival_msg="운행 중",
+            arrival_msg="회차 준비 중" if turnback else "운행 중",
+            status="arrived" if turnback else _STATUS_BY_RAW.get(entry.status, "approaching"),
             stations_away=distance,
             stations_away_estimated=False,
             matches_direction=True,
             is_express=entry.kind == "급행",
         )
-        for distance, entry in ranked[:limit]
+        for distance, entry, turnback in ranked[:limit]
     ]
 
 
@@ -297,7 +329,7 @@ async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float)
 
     candidates: list[OnboardTrain] = []
     for raw_idx, station in enumerate(snapshot):
-        bucket = station.up if direction == 1 else station.dn
+        bucket = _train_bucket(line_key, station, direction)
         for entry in bucket:
             leg_index = _stations_between(line_key, boarding_idx, raw_idx, direction)
             if leg_index is None:

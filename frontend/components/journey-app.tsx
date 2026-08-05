@@ -51,17 +51,22 @@ export function JourneyApp() {
   const [startingNextJourney, setStartingNextJourney] = useState(false);
   const { snapshot, error, refresh } = useCurrentJourney();
   const isIdle = snapshot?.state === "idle";
-  const isStartingNextJourneyFromCompleted = snapshot?.state === "completed" && startingNextJourney;
-  const showsSearchFlow = isIdle || isStartingNextJourneyFromCompleted;
-  const activeStep = isStartingNextJourneyFromCompleted
+  const isStartingNextJourneyFromTerminal = (snapshot?.state === "completed" || snapshot?.state === "push_failed") && startingNextJourney;
+  const showsSearchFlow = isIdle || isStartingNextJourneyFromTerminal;
+  const activeStep = isStartingNextJourneyFromTerminal
     ? routes ? "경로" : "검색"
     : stepFor(snapshot, isIdle && routes !== null);
 
   useEffect(() => {
-    if (snapshot?.state !== "completed") {
+    if (snapshot?.state !== "completed" && snapshot?.state !== "push_failed") {
       setStartingNextJourney(false);
     }
   }, [snapshot?.state]);
+
+  const showStationSelection = () => {
+    setRoutes(null);
+    setStartingNextJourney(true);
+  };
 
   const title = snapshot === null
     ? "여정 상태를 확인하고 있어요"
@@ -141,14 +146,15 @@ export function JourneyApp() {
         ) : snapshot.state === "completed" ? (
           <TransferStatus
             journey={snapshot}
-            onBeginNextJourney={() => {
-              setRoutes(null);
-              setStartingNextJourney(true);
-            }}
+            onBeginNextJourney={showStationSelection}
             onJourneyRefresh={refresh}
           />
         ) : snapshot.state === "pushing" || snapshot.state === "push_failed" ? (
-          <TransferStatus journey={snapshot} onJourneyRefresh={refresh} />
+          <TransferStatus
+            journey={snapshot}
+            onDeferPush={snapshot.state === "push_failed" ? showStationSelection : undefined}
+            onJourneyRefresh={refresh}
+          />
         ) : null}
       </Card>
 

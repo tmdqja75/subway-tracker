@@ -55,6 +55,8 @@ export interface ArrivingTrain {
   direction_label: string;
   eta_seconds: number;
   arrival_msg: string;
+  /** Station-relative provider state, used to render arrived trains on the station node. */
+  status: "approaching" | "arrived" | "departed";
   stations_away: number | null;
   stations_away_estimated: boolean;
   matches_direction: boolean;

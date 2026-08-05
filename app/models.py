@@ -76,6 +76,10 @@ class ArrivingTrain(BaseModel):
     direction_label: str  # e.g. "성수행 - 구의방면"
     eta_seconds: int
     arrival_msg: str
+    # Current station-relative state from the subway feed. It lets the
+    # boarding diagram place an arrived train on its station instead of
+    # treating every feed record as somewhere between stations.
+    status: str = "approaching"
     stations_away: int | None  # None when Seoul gives us no usable distance signal
     stations_away_estimated: bool  # True when derived from ETA rather than the API's own count
     matches_direction: bool

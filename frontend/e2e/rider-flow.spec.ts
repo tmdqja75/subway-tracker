@@ -177,6 +177,21 @@ test("an authoritative on-train snapshot exposes accessible rider status and con
   await expectNoHorizontalOverflow(page);
 });
 
+test("a failed transfer can defer delivery and return to station selection without retrying", async ({ page }) => {
+  const state = createMockApiState({ current: pushFailedJourney() });
+  await openWithState(page, state);
+
+  const deferDelivery = page.getByRole("button", { name: "데이터 나중에 다시 보내기" });
+  await expectNativeTouchTarget(deferDelivery);
+  await deferDelivery.click();
+
+  await expect(page.getByRole("combobox", { name: "출발역" })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "도착역" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "어디로 이동하세요?" })).toBeVisible();
+  expect(state.retryRequests).toBe(0);
+  await expectNoHorizontalOverflow(page);
+});
+
 test("reload renders pushing, completed, and failed transfer snapshots; retry is single-shot and refreshes state", async ({ page }) => {
   const state = createMockApiState({ current: pushingJourney() });
   await openWithState(page, state);

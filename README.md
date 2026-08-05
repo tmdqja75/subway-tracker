@@ -73,8 +73,8 @@ requests use the same origin without a separate Next production server.
 
 ### Docker Compose (recommended)
 
-Compose keeps runtime data in `./data/`, publishes the application on port
-`8081`, and rebuilds the frontend as part of the image build.
+Compose keeps runtime data in `./data/`, binds the application to
+`127.0.0.1:8081`, and rebuilds the frontend as part of the image build.
 
 ```bash
 cp .env.example .env
@@ -94,10 +94,12 @@ curl -f http://127.0.0.1:8081/debug.html
 curl -f 'http://127.0.0.1:8081/api/stations/search?q=강'
 ```
 
-The rider UI is at `http://<server>:8081/` and the retained diagnostic page
-is at `http://<server>:8081/debug.html`. The Compose port is published on all
-host interfaces; put the service behind an HTTPS reverse proxy or bind it to
-`127.0.0.1` before exposing it publicly.
+The rider UI is at `http://127.0.0.1:8081/` and the retained diagnostic page
+is at `http://127.0.0.1:8081/debug.html`. On this deployment, Tailscale Serve
+owns the tailnet HTTPS listener on port 8081 and proxies it to this loopback
+target; keep the Compose binding on `127.0.0.1` so it does not conflict with
+the tailnet listener. Use an HTTPS reverse proxy or Tailscale Serve rather
+than exposing the app directly.
 
 ### App icon and iPhone home screen
 
@@ -158,8 +160,14 @@ long-lived direct deployment.
 
 `http://<server>:8000/debug.html` (or `http://localhost:8081/debug.html` when
 using Compose) lists recent journeys with route geometry, logged points on a
-Leaflet map, and a horizontal timeline — useful for checking interpolation/
-logging behavior without re-riding a train.
+horizontal timeline — useful for checking interpolation/
+logging behavior without re-riding a train. Every terminal `push_failed` or
+`cancelled` journey enables **"Reitti로 데이터 다시 보내기"**, including a
+zero-point record. The button previews the selected journey and point count,
+then requires a confirmation before calling
+`POST /api/debug/journeys/{journey_id}/retry-push`.
+That flow first records `pushing` and durable transfer progress in SQLite, then
+resends the retained points to Reitti. It never resumes the cancelled tracker.
 
 ## Docker + shared Grafana LGTM
 
@@ -200,6 +208,10 @@ persist outside the container.
   destination. The server then polls the Seoul position API for that train
   number and interpolates lat/lon between station coordinates by elapsed time
   (interpolated points are marked lower-accuracy for Reitti).
+- On the **탑승** line, the source feed's station-relative state is retained:
+  an arrived train is shown on that station, an approaching train in the
+  preceding segment, and a departed train in the following segment. The view
+  does not present an arrived train as if it were still between stations.
 - The Seoul position feed provides only a current station-relative observation,
   not a historic departure/stop timeline. For a train selected after the
   origin, the tracker reconstructs the origin-to-current path from the leg's
@@ -230,6 +242,12 @@ persist outside the container.
   departure/destination search screen. Starting the next route preserves the
   completed journey record for the debug history instead of marking it
   cancelled.
+- If a Reitti delivery fails, the failure dashboard retains its retry control
+  and also offers **"데이터 나중에 다시 보내기"**. This temporarily returns to
+  the departure/destination station-selection screen without changing the
+  backend's `push_failed` snapshot; reload to return to the retained transfer
+  and retry it. Starting a different journey follows the single-active-journey
+  rule and cancels the prior failed journey.
 
 ## Notes / limitations
 

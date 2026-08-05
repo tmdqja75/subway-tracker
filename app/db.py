@@ -350,6 +350,7 @@ class Database:
                     "journey_id": row["id"],
                     "created_at": row["created_at"],
                     "state": row["state"],
+                    "can_retry": row["state"] in {"cancelled", "push_failed"},
                     "current_leg_idx": row["current_leg_idx"],
                     "train_no": row["train_no"],
                     "tracking_mode": row["tracking_mode"],

@@ -33,9 +33,9 @@ export interface BoardingLineData {
  * `WINDOW` stations before/after the rider's boarding station, plus every
  * direction-matched train placed along it.
  *
- * Placement rules: an arrived train sits on its station's node; a departed
- * train sits a quarter of the way into the next segment; an approaching
- * train sits a quarter of the way before the station it's nearing.
+ * Placement rules: a feed-reported arrived train sits on its station's node;
+ * a departed train sits a quarter of the way into the next segment; an
+ * approaching train sits a quarter of the way before the station it's nearing.
  *
  * ponytail: ArrivingTrain only reports an integer `stations_away`, not a
  * sub-segment fraction, so each "N stations away" train is placed as
@@ -81,16 +81,36 @@ export function buildBoardingLine(
     }
     const targetIdx = currentIdx - train.stations_away;
     const fromAbs = targetIdx - 1;
-    if (fromAbs < windowStart || targetIdx > windowEnd) {
-      return;
-    }
-    trains.push({
+    const entry = {
       key: `arriving-${train.train_no}-${i}`,
       trainNo: train.train_no,
       destination: `${train.terminus}행`,
       isExpress: train.is_express,
-      state: "approaching",
       retroactive: false,
+    };
+
+    if (train.status === "arrived") {
+      if (targetIdx < windowStart || targetIdx > windowEnd) {
+        return;
+      }
+      trains.push({ ...entry, state: "arrived", atIndex: targetIdx - windowStart });
+      return;
+    }
+
+    if (train.status === "departed") {
+      if (targetIdx < windowStart || targetIdx >= windowEnd) {
+        return;
+      }
+      trains.push({ ...entry, state: "departed", fromGapIndex: targetIdx - windowStart });
+      return;
+    }
+
+    if (fromAbs < windowStart || targetIdx > windowEnd) {
+      return;
+    }
+    trains.push({
+      ...entry,
+      state: "approaching",
       fromGapIndex: fromAbs - windowStart,
     });
   });

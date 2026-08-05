@@ -51,6 +51,7 @@ export const arrivingTrain: ArrivingTrain = {
   direction_label: "성수행 - 구의방면",
   eta_seconds: 90,
   arrival_msg: "1분 30초 후 도착",
+  status: "approaching",
   stations_away: 1,
   stations_away_estimated: false,
   matches_direction: true,
