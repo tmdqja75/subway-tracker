@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { getRouteHistory, searchRoutes } from "../lib/api";
 import type { Itinerary, RouteHistoryItem, RouteHistoryResponse, Station } from "../lib/types";
 import { Button } from "./ui/button";
+import { LineBadge } from "./ui/line-badge";
 import { StationAutocomplete } from "./station-autocomplete";
 
 type JourneySearchProps = {
@@ -48,12 +49,19 @@ function RouteHistorySection({
         {!isLoading && visibleItems.map((route) => (
           <li className="route-history__item" key={`${route.start.station_id}-${route.end.station_id}`}>
             <button
+              aria-label={routeLabel(route)}
               className="route-history__button"
               disabled={isSearchLoading}
               onClick={() => onRouteSelect(route)}
               type="button"
             >
-              {routeLabel(route)}
+              <span aria-hidden="true" className="route-history__stations">
+                <LineBadge line={route.start.line} />
+                <span>{route.start.name}</span>
+                <span className="route-history__arrow">→</span>
+                <LineBadge line={route.end.line} />
+                <span>{route.end.name}</span>
+              </span>
             </button>
           </li>
         ))}
