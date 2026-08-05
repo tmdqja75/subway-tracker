@@ -20,6 +20,13 @@ const uncoveredItinerary: Itinerary = {
   legs: itinerary.legs.map((leg) => ({ ...leg, line_key: null })),
 };
 
+const busItinerary: Itinerary = {
+  ...itinerary,
+  total_time: 900,
+  summary: ["강남에서 146번 버스 탑승"],
+  legs: itinerary.legs.map((leg) => ({ ...leg, route: "146", line_key: null, mode: "BUS" })),
+};
+
 function deferred<T>() {
   let reject!: (reason?: unknown) => void;
   const promise = new Promise<T>((_resolve, rejectPromise) => {
@@ -54,6 +61,20 @@ describe("RouteList", () => {
     expect(screen.getByText("강남에서 2호선 탑승")).toBeVisible();
     expect(screen.getByText("실시간 안내 미지원 구간이 있어 시간 기준으로 안내됩니다.")).toBeVisible();
     expect(screen.getByText("요금 정보 없음")).toBeVisible();
+  });
+
+  it("filters out itineraries with a bus leg", () => {
+    render(<RouteList itineraries={[itinerary, busItinerary]} onBack={vi.fn()} onStarted={vi.fn()} />);
+
+    const routes = screen.getByRole("list", { name: "추천 경로" });
+    expect(within(routes).getAllByRole("button")).toHaveLength(1);
+    expect(screen.queryByText("강남에서 146번 버스 탑승")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state when every itinerary contains a bus leg", () => {
+    render(<RouteList itineraries={[busItinerary]} onBack={vi.fn()} onStarted={vi.fn()} />);
+
+    expect(screen.getByText("검색 결과에 맞는 경로가 없어요. 역 이름을 다시 확인해 주세요.")).toBeVisible();
   });
 
   it("starts exactly the selected itinerary and prevents duplicate starts while pending", async () => {

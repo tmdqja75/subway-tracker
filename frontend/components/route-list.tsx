@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { startJourney } from "../lib/api";
 import type { Itinerary } from "../lib/types";
 import { Button } from "./ui/button";
+import { LineBadge } from "./ui/line-badge";
 
 type RouteListProps = {
   itineraries: Itinerary[];
@@ -20,10 +21,17 @@ function fareLabel(fare: number | null): string {
   return fare === null ? "요금 정보 없음" : `${fare.toLocaleString("ko-KR")}원`;
 }
 
+const BUS_MODES = new Set(["BUS", "EXPRESSBUS"]);
+
+function isBusLeg(leg: Itinerary["legs"][number]): boolean {
+  return BUS_MODES.has(leg.mode);
+}
+
 export function RouteList({ itineraries, onBack, onStarted }: RouteListProps) {
   const [startingIndex, setStartingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
+  const subwayItineraries = itineraries.filter((itinerary) => !itinerary.legs.some(isBusLeg));
 
   useEffect(() => () => requestController.current?.abort(), []);
 
@@ -53,7 +61,7 @@ export function RouteList({ itineraries, onBack, onStarted }: RouteListProps) {
     }
   };
 
-  if (!itineraries.length) {
+  if (!subwayItineraries.length) {
     return (
       <div className="route-list route-list--empty">
         <p>검색 결과에 맞는 경로가 없어요. 역 이름을 다시 확인해 주세요.</p>
@@ -66,7 +74,7 @@ export function RouteList({ itineraries, onBack, onStarted }: RouteListProps) {
     <div className="route-list">
       {error ? <p className="field-error" role="alert">{error}</p> : null}
       <ol aria-label="추천 경로" className="route-list__items">
-        {itineraries.map((itinerary, index) => {
+        {subwayItineraries.map((itinerary, index) => {
           const realtimeUnavailable = itinerary.legs.some((leg) => leg.line_key === null);
           const isStarting = startingIndex === index;
 
@@ -95,6 +103,11 @@ export function RouteList({ itineraries, onBack, onStarted }: RouteListProps) {
                     <span className="route-card__metric-label">요금</span>
                     <span className="route-card__metric-value">{fareLabel(itinerary.fare)}</span>
                   </span>
+                </span>
+                <span aria-hidden="true" className="route-card__lines">
+                  {itinerary.legs.map((leg, legIndex) => (
+                    <LineBadge key={`${leg.line_key ?? "unknown"}-${legIndex}`} line={leg.line_key} />
+                  ))}
                 </span>
                 <span className="route-card__summary">{itinerary.summary.join(" · ")}</span>
                 <span className="route-card__coverage">

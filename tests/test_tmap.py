@@ -186,11 +186,14 @@ async def test_search_routes_returns_every_tmap_itinerary_with_timer_only_bus_le
         itineraries = await search_routes("key", 127.0, 37.0, 126.0, 37.5)
 
     assert len(itineraries) == len(data["metaData"]["plan"]["itineraries"])
+    assert itineraries[0].legs[0].mode == "SUBWAY"
     assert itineraries[1].legs[0].route == "간선:360"
     assert itineraries[1].legs[0].line_key is None
+    assert itineraries[1].legs[0].mode == "BUS"
     assert itineraries[1].legs[0].shape == [[37.4987, 127.0294], [37.5535, 126.9728]]
     assert itineraries[1].summary == ["🚌 간선:360: 강남역 → 서울역"]
     assert [leg.route for leg in itineraries[2].legs] == ["간선:146", "수도권9호선"]
+    assert [leg.mode for leg in itineraries[2].legs] == ["BUS", "SUBWAY"]
     assert itineraries[2].legs[0].transfer_walk_time == 60
 
 

@@ -154,7 +154,7 @@ def test_database_clears_stale_route_cache_when_cache_format_version_changes(tmp
     version = migrated.conn.execute(
         "SELECT value FROM app_meta WHERE key = 'route_options_cache_format_version'"
     ).fetchone()["value"]
-    assert version == "2"
+    assert version == "3"
 
 
 def test_board_rechecks_that_selected_train_is_still_approaching(tmp_path, monkeypatch):

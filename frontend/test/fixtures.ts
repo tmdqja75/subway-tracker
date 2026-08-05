@@ -27,6 +27,7 @@ export const itinerary: Itinerary = {
     {
       route: "수도권2호선",
       line_key: "2",
+      mode: "SUBWAY",
       section_time: 420,
       start_name: "강남",
       end_name: "역삼",

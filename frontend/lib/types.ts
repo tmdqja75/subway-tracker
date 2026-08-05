@@ -30,6 +30,7 @@ export interface LegStation {
 export interface SubwayLeg {
   route: string;
   line_key: string | null;
+  mode: string;
   section_time: number;
   start_name: string;
   end_name: string;
