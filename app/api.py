@@ -238,6 +238,16 @@ async def retry_push(request: Request):
     return {"ok": True}
 
 
+@router.post("/debug/journeys/{journey_id}/retry-push")
+async def retry_debug_journey_push(request: Request, journey_id: int):
+    """Resend retained points for an eligible terminal debug-history journey."""
+    try:
+        await request.app.state.manager.retry_debug_push(journey_id)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
 @router.get("/journeys/current/points")
 async def points(request: Request):
     manager = request.app.state.manager

@@ -13,6 +13,7 @@ type TransferStatusProps = {
   journey: TransferJourney;
   onJourneyRefresh: () => void;
   onBeginNextJourney?: () => void;
+  onDeferPush?: () => void;
 };
 
 const RETRY_ERROR = "이동 기록을 다시 전송하지 못했어요. 잠시 후 다시 시도해 주세요.";
@@ -69,7 +70,7 @@ function snapshotKey(journey: TransferJourney): string {
 }
 
 /** Shows only backend-confirmed transfer progress and delegates retry to the persisted journey. */
-export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney }: TransferStatusProps) {
+export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, onDeferPush }: TransferStatusProps) {
   const [retryPending, setRetryPending] = useState(false);
   const [retrySucceeded, setRetrySucceeded] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -163,6 +164,7 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney }
           <p>기술 정보: {failureTransfer(journey).detail}</p>
           <p>이동 기록은 보관되어 있어요. 전송한 위치 {transfer.sent_points} / {transfer.total_points}개와 남은 위치 {transfer.remaining_points}개를 다시 전송할 수 있어요.</p>
           <Button disabled={locked} onClick={() => void retry()}>{retryLabel}</Button>
+          {onDeferPush ? <Button disabled={locked} onClick={onDeferPush} variant="secondary">데이터 나중에 다시 보내기</Button> : null}
           {retryError ? <p className="field-error" role="alert">{retryError}</p> : null}
         </div>
       ) : null}

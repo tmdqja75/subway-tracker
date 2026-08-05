@@ -548,6 +548,28 @@ class JourneyManager:
             raise ValueError(f"nothing to retry in state {j.state}")
         self._start_push(j)
 
+    async def retry_debug_push(self, journey_id: int) -> None:
+        """Send retained points for an eligible terminal debug-history record."""
+        row = self.db.get_journey(journey_id)
+        if row is None:
+            raise ValueError("journey not found")
+        state = JourneyState(row["state"])
+        if state not in {JourneyState.CANCELLED, JourneyState.PUSH_FAILED}:
+            raise ValueError(f"nothing to retry in state {state}")
+        if self._push_task and not self._push_task.done():
+            raise ValueError("another Reitti transfer is already in progress")
+        if self.active and self.active.id != journey_id:
+            raise ValueError("another journey is active")
+        if self.active:
+            await self.retry_push()
+            return
+
+        # Cancelled records have no active tracker. Rebuild just enough state
+        # to transfer their retained trace without resuming the old ride.
+        j = ActiveJourney(row["id"], self.db.load_itinerary(row), row["current_leg_idx"])
+        j.state = state
+        self._start_push(j)
+
     # -- tracking loop -------------------------------------------------------
 
     def _start_tracker(self) -> None:

@@ -90,6 +90,24 @@ describe("TransferStatus", () => {
     expect(screen.queryByRole("button", { name: "새 여정 시작하기" })).not.toBeInTheDocument();
   });
 
+  it("lets a failed transfer return to station selection for a later retry without sending again", () => {
+    const onDeferPush = vi.fn();
+    render(
+      <TransferStatus
+        journey={transferJourney("push_failed")}
+        onDeferPush={onDeferPush}
+        onJourneyRefresh={vi.fn()}
+      />,
+    );
+
+    const deferPushButton = screen.getByRole("button", { name: "데이터 나중에 다시 보내기" });
+    expect(deferPushButton.tagName).toBe("BUTTON");
+    fireEvent.click(deferPushButton);
+
+    expect(onDeferPush).toHaveBeenCalledTimes(1);
+    expect(retryCurrentJourneyPush).not.toHaveBeenCalled();
+  });
+
   it("explains failed delivery with the backend message, technical detail, and retained records", () => {
     render(<TransferStatus journey={transferJourney("push_failed")} onJourneyRefresh={vi.fn()} />);
 

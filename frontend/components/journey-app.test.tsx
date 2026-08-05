@@ -39,10 +39,12 @@ vi.mock("./transfer-status", () => ({
     journey,
     onJourneyRefresh,
     onBeginNextJourney,
+    onDeferPush,
   }: {
     journey: { state: string };
     onJourneyRefresh: () => void;
     onBeginNextJourney?: () => void;
+    onDeferPush?: () => void;
   }) => (
     <>
       <button onClick={onJourneyRefresh} type="button">
@@ -51,6 +53,9 @@ vi.mock("./transfer-status", () => ({
       <span data-has-begin-next={String(onBeginNextJourney !== undefined)} data-testid="transfer-begin-next" />
       {onBeginNextJourney ? (
         <button onClick={onBeginNextJourney} type="button">새 여정 시작하기</button>
+      ) : null}
+      {onDeferPush ? (
+        <button onClick={onDeferPush} type="button">데이터 나중에 다시 보내기</button>
       ) : null}
     </>
   ),
@@ -138,6 +143,37 @@ describe("JourneyApp", () => {
     rerender(<JourneyApp />);
     expect(screen.getByRole("button", { name: "전송 상태: push_failed" })).toBeVisible();
     expect(screen.getByTestId("transfer-begin-next")).toHaveAttribute("data-has-begin-next", "false");
+  });
+
+  it("returns a failed transfer to the station-selection search without fabricating an idle snapshot", () => {
+    const refresh = vi.fn();
+    const failedSnapshot = {
+      ...activeJourneySnapshot,
+      state: "push_failed" as const,
+      transfer: {
+        sent_points: 0,
+        total_points: 1,
+        remaining_points: 1,
+        progress_percent: 0,
+        reason: "network",
+        message: "전송에 실패했어요.",
+        detail: "timeout",
+        can_retry: true as const,
+      },
+    };
+    vi.mocked(useCurrentJourney).mockReturnValue({
+      snapshot: failedSnapshot,
+      loading: false,
+      error: null,
+      refresh,
+    });
+    render(<JourneyApp />);
+
+    fireEvent.click(screen.getByRole("button", { name: "데이터 나중에 다시 보내기" }));
+
+    expect(screen.getByRole("button", { name: "경로 보이기" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "전송 상태: push_failed" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: "이동 단계" })).getAllByRole("listitem")[0]).toHaveAttribute("aria-current", "step");
   });
 
   it("uses a completed-only presentation mode to start the next journey from station search", () => {

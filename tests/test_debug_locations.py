@@ -59,6 +59,7 @@ def test_debug_locations_returns_journey_points_and_route_context(tmp_path):
     journey = payload["journeys"][0]
     assert journey["journey_id"] == journey_id
     assert journey["state"] == "on_train"
+    assert journey["can_retry"] is False
     assert journey["train_no"] == "6106"
     assert journey["summary"] == ["🚇 수인분당선: 선릉 → 왕십리"]
     assert journey["legs"][0]["route"] == "수인분당선"
@@ -95,3 +96,56 @@ def test_debug_locations_supports_limit(tmp_path):
     assert response.status_code == 200
     journey_ids = [journey["journey_id"] for journey in response.json()["journeys"]]
     assert journey_ids == [3, 2]
+
+
+def test_debug_locations_marks_cancelled_and_failed_journeys_as_retryable(tmp_path):
+    db = Database(tmp_path / "tracker.db")
+    cancelled_with_points = db.create_journey(make_itinerary(), "cancelled")
+    failed_with_points = db.create_journey(make_itinerary(), "push_failed")
+    cancelled_without_points = db.create_journey(make_itinerary(), "cancelled")
+    for journey_id in (cancelled_with_points, failed_with_points):
+        db.add_point(
+            journey_id,
+            0,
+            TrackPoint(lat=37.505253, lon=127.048661, ts=journey_id, estimated=False),
+        )
+
+    app = FastAPI()
+    app.state.manager = SimpleNamespace(db=db)
+    app.include_router(router)
+
+    response = TestClient(app).get("/api/debug/locations")
+
+    assert response.status_code == 200
+    assert {
+        journey["journey_id"]: journey["can_retry"]
+        for journey in response.json()["journeys"]
+    } == {
+        cancelled_with_points: True,
+        failed_with_points: True,
+        cancelled_without_points: True,
+    }
+
+
+def test_debug_retry_push_targets_the_selected_journey(tmp_path):
+    db = Database(tmp_path / "tracker.db")
+    journey_id = db.create_journey(make_itinerary(), "cancelled")
+    retried = []
+
+    class Manager:
+        active = None
+
+        def __init__(self):
+            self.db = db
+
+        async def retry_debug_push(self, selected_journey_id: int) -> None:
+            retried.append(selected_journey_id)
+
+    app = FastAPI()
+    app.state.manager = Manager()
+    app.include_router(router)
+
+    response = TestClient(app).post(f"/api/debug/journeys/{journey_id}/retry-push")
+
+    assert response.status_code == 200
+    assert retried == [journey_id]
