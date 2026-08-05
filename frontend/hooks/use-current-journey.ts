@@ -12,6 +12,7 @@ export interface CurrentJourneyState {
   snapshot: CurrentJourneyResponse | null;
   loading: boolean;
   error: string | null;
+  lastUpdatedAt: number | null;
   refresh: () => void;
 }
 
@@ -47,6 +48,7 @@ export function useCurrentJourney(): CurrentJourneyState {
   const [snapshot, setSnapshot] = useState<CurrentJourneyResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const mountedRef = useRef(false);
   const requestControllerRef = useRef<AbortController | null>(null);
   const requestSequenceRef = useRef(0);
@@ -100,6 +102,7 @@ export function useCurrentJourney(): CurrentJourneyState {
         setSnapshot(nextSnapshot);
         setLoading(false);
         setError(null);
+        setLastUpdatedAt(Date.now());
         scheduleRefresh(pollDelayFor(nextSnapshot));
       })
       .catch((requestError: unknown) => {
@@ -137,5 +140,5 @@ export function useCurrentJourney(): CurrentJourneyState {
     };
   }, [clearScheduledRefresh, refresh]);
 
-  return { snapshot, loading, error, refresh };
+  return { snapshot, loading, error, lastUpdatedAt, refresh };
 }

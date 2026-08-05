@@ -49,7 +49,7 @@ function activeStateLabel(snapshot: Exclude<CurrentJourneyResponse, { state: "id
 export function JourneyApp() {
   const [routes, setRoutes] = useState<Itinerary[] | null>(null);
   const [startingNextJourney, setStartingNextJourney] = useState(false);
-  const { snapshot, error, refresh } = useCurrentJourney();
+  const { snapshot, error, lastUpdatedAt, refresh } = useCurrentJourney();
   const isIdle = snapshot?.state === "idle";
   const isStartingNextJourneyFromTerminal = (snapshot?.state === "completed" || snapshot?.state === "push_failed") && startingNextJourney;
   const showsSearchFlow = isIdle || isStartingNextJourneyFromTerminal;
@@ -142,7 +142,7 @@ export function JourneyApp() {
         ) : snapshot.state === "awaiting_board" ? (
           <TrainPicker journey={snapshot} onJourneyRefresh={refresh} />
         ) : snapshot.state === "on_train" ? (
-          <LiveJourney journey={snapshot} onJourneyRefresh={refresh} />
+          <LiveJourney journey={snapshot} lastUpdatedAt={lastUpdatedAt} onJourneyRefresh={refresh} />
         ) : snapshot.state === "completed" ? (
           <TransferStatus
             journey={snapshot}

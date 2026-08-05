@@ -7,6 +7,7 @@ import { buildBoardingLine } from "../lib/boarding-line";
 import type { ActiveJourneySnapshot, CurrentArrivalsResponse } from "../lib/types";
 import { BoardingLine } from "./boarding-line";
 import { Button } from "./ui/button";
+import { PollCountdownRing } from "./ui/poll-countdown-ring";
 
 type AwaitingBoardJourney = Extract<ActiveJourneySnapshot, { state: "awaiting_board" }>;
 
@@ -43,6 +44,7 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
   const [arrivalsLoading, setArrivalsLoading] = useState(journey.leg.covered);
   const [arrivalsError, setArrivalsError] = useState<string | null>(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
+  const [nextPollAt, setNextPollAt] = useState<number | null>(null);
   const [boarding, setBoarding] = useState(false);
   const [boardSucceeded, setBoardSucceeded] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
@@ -60,6 +62,7 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
       setArrivals(null);
       setArrivalsLoading(false);
       setArrivalsError(null);
+      setNextPollAt(null);
       return;
     }
 
@@ -71,6 +74,7 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
       controller = new AbortController();
       setArrivalsLoading(true);
       setArrivalsError(null);
+      setNextPollAt(null);
 
       void getCurrentArrivals(controller.signal)
         .then((nextArrivals) => {
@@ -90,6 +94,7 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
             return;
           }
           setArrivalsLoading(false);
+          setNextPollAt(Date.now() + ARRIVALS_POLL_DELAY_MS);
           timeout = window.setTimeout(loadArrivals, ARRIVALS_POLL_DELAY_MS);
         });
     };
@@ -227,14 +232,17 @@ export function TrainPicker({ journey, onJourneyRefresh }: TrainPickerProps) {
         <>
           <div className="train-picker__toolbar">
             <p>진행 방향에 맞는 열차만 표시합니다.</p>
-            <Button
-              aria-label="열차 목록 새로고침"
-              disabled={boardingLocked}
-              onClick={() => setRefreshIndex((index) => index + 1)}
-              variant="ghost"
-            >
-              새로고침
-            </Button>
+            <div className="train-picker__toolbar-actions">
+              <PollCountdownRing durationMs={ARRIVALS_POLL_DELAY_MS} nextPollAt={nextPollAt} />
+              <Button
+                aria-label="열차 목록 새로고침"
+                disabled={boardingLocked}
+                onClick={() => setRefreshIndex((index) => index + 1)}
+                variant="ghost"
+              >
+                새로고침
+              </Button>
+            </div>
           </div>
 
           {boardingLine ? (

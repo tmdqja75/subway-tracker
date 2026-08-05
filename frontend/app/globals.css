@@ -725,11 +725,73 @@ h2 {
   gap: 12px;
 }
 
+.train-picker__toolbar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
 .train-picker__toolbar .button {
   width: auto;
   min-height: 36px;
   padding: 7px 9px;
   white-space: nowrap;
+}
+
+.poll-ring {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+}
+
+.poll-ring svg {
+  transform: rotate(-90deg);
+}
+
+.poll-ring__track {
+  fill: none;
+  stroke: rgba(16, 35, 63, 0.1);
+  stroke-width: 3;
+}
+
+.poll-ring__progress {
+  fill: none;
+  stroke: #3478c7;
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear;
+}
+
+.poll-ring__value {
+  position: absolute;
+  color: #55708f;
+  font-size: 0.6875rem;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+}
+
+.poll-ring--busy .poll-ring__track {
+  animation: poll-ring-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes poll-ring-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.85; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .poll-ring__progress {
+    transition: none;
+  }
+
+  .poll-ring--busy .poll-ring__track {
+    animation: none;
+  }
 }
 
 .train-picker__timer {
@@ -1044,6 +1106,36 @@ h2 {
 .live-journey__summary .live-journey__points {
   color: #315b8d;
   font-weight: 760;
+}
+
+.last-updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #34704a;
+  font-size: 0.75rem;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+}
+
+.last-updated__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  animation: last-updated-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes last-updated-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .last-updated__dot {
+    animation: none;
+  }
 }
 
 .live-journey__summary .live-journey__history-notice {
