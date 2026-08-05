@@ -68,6 +68,7 @@ export const itineraries: Itinerary[] = [
       {
         route: "수도권2호선",
         line_key: "2",
+        mode: "SUBWAY",
         section_time: 1_380,
         start_name: "강남",
         end_name: "홍대입구",
@@ -88,6 +89,7 @@ export const itineraries: Itinerary[] = [
       {
         route: "수도권9호선",
         line_key: "9",
+        mode: "SUBWAY",
         section_time: 1_380,
         start_name: "강남",
         end_name: "홍대입구",

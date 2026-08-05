@@ -10,11 +10,13 @@ import {
 import type { ActiveJourneySnapshot } from "../lib/types";
 import { LiveJourneyMap } from "./maps/live-journey-map";
 import { Button } from "./ui/button";
+import { LastUpdatedLabel } from "./ui/last-updated-label";
 
 type OnTrainJourney = Extract<ActiveJourneySnapshot, { state: "on_train" }>;
 
 type LiveJourneyProps = {
   journey: OnTrainJourney;
+  lastUpdatedAt?: number | null;
   onJourneyRefresh: () => void;
 };
 
@@ -52,7 +54,7 @@ function trainCopy(train: OnTrainJourney["train"]): string {
   return `${train.train_no} 열차 · ${train.station_name} · ${train.status}`;
 }
 
-export function LiveJourney({ journey, onJourneyRefresh }: LiveJourneyProps) {
+export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }: LiveJourneyProps) {
   const [pendingAction, setPendingAction] = useState<JourneyAction | null>(null);
   const [actionSucceeded, setActionSucceeded] = useState(false);
   const [showCancelConfirmation, setShowCancelConfirmation] = useState(false);
@@ -133,6 +135,7 @@ export function LiveJourney({ journey, onJourneyRefresh }: LiveJourneyProps) {
         <p className="live-journey__route">{journey.leg.start} → {journey.leg.end}</p>
         <p className="live-journey__train">{trainCopy(journey.train)}</p>
         <p>{trackingCopy(journey.tracking_mode)}</p>
+        <LastUpdatedLabel updatedAt={lastUpdatedAt} />
         {journey.history_estimated ? (
           <p aria-label="추정 기록 안내" className="live-journey__history-notice" role="status">
             이전 이동 기록은 재구성한 추정치이며, 현재 추적은 실시간입니다.

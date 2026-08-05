@@ -48,6 +48,7 @@ class SubwayLeg(BaseModel):
 
     route: str  # Tmap route name, e.g. "수도권3호선"
     line_key: str | None  # normalized key for Seoul realtime APIs, None if uncovered
+    mode: str = "SUBWAY"  # Tmap transit mode: SUBWAY, BUS, EXPRESSBUS, TRAIN, FERRY
     section_time: int  # seconds
     start_name: str
     end_name: str

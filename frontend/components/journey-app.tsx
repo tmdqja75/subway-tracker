@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 
 import { useCurrentJourney } from "../hooks/use-current-journey";
+import { getLineColor } from "../lib/line-colors";
 import type { CurrentJourneyResponse, Itinerary } from "../lib/types";
 import { JourneySearch } from "./journey-search";
 import { LiveJourney } from "./live-journey";
@@ -49,13 +50,14 @@ function activeStateLabel(snapshot: Exclude<CurrentJourneyResponse, { state: "id
 export function JourneyApp() {
   const [routes, setRoutes] = useState<Itinerary[] | null>(null);
   const [startingNextJourney, setStartingNextJourney] = useState(false);
-  const { snapshot, error, refresh } = useCurrentJourney();
+  const { snapshot, error, lastUpdatedAt, refresh } = useCurrentJourney();
   const isIdle = snapshot?.state === "idle";
   const isStartingNextJourneyFromTerminal = (snapshot?.state === "completed" || snapshot?.state === "push_failed") && startingNextJourney;
   const showsSearchFlow = isIdle || isStartingNextJourneyFromTerminal;
   const activeStep = isStartingNextJourneyFromTerminal
     ? routes ? "경로" : "검색"
     : stepFor(snapshot, isIdle && routes !== null);
+  const activeLeg = !showsSearchFlow && snapshot !== null ? snapshot.leg : null;
 
   useEffect(() => {
     if (snapshot?.state !== "completed" && snapshot?.state !== "push_failed") {
@@ -115,7 +117,11 @@ export function JourneyApp() {
         </div>
       ) : null}
 
-      <Card aria-labelledby="journey-workflow-title" className="journey-card">
+      <Card
+        aria-labelledby="journey-workflow-title"
+        className="journey-card"
+        style={activeLeg ? ({ "--line-color": getLineColor(activeLeg.line_key) } as CSSProperties) : undefined}
+      >
         <div className="journey-card__header">
           <div>
             <p className="eyebrow">YOUR JOURNEY</p>
@@ -123,6 +129,7 @@ export function JourneyApp() {
           </div>
           <span className="idle-chip">{chip}</span>
         </div>
+        {activeLeg ? <p className="line-plate">{activeLeg.line_key ?? "노선 정보 없음"}</p> : null}
 
         {snapshot === null ? (
           <div className="journey-handoff" role="status">
@@ -142,7 +149,7 @@ export function JourneyApp() {
         ) : snapshot.state === "awaiting_board" ? (
           <TrainPicker journey={snapshot} onJourneyRefresh={refresh} />
         ) : snapshot.state === "on_train" ? (
-          <LiveJourney journey={snapshot} onJourneyRefresh={refresh} />
+          <LiveJourney journey={snapshot} lastUpdatedAt={lastUpdatedAt} onJourneyRefresh={refresh} />
         ) : snapshot.state === "completed" ? (
           <TransferStatus
             journey={snapshot}

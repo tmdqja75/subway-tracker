@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { searchStations } from "../lib/api";
 import type { Station } from "../lib/types";
+import { LineBadge } from "./ui/line-badge";
 
 type StationAutocompleteProps = {
   id: string;
@@ -179,7 +180,7 @@ export function StationAutocomplete({
       {selectedStation ? (
         <div className="station-autocomplete__selected">
           <p className="station-autocomplete__selection" id={selectedStationId} role="status">
-            선택됨: {selectedStation.name} · {selectedStation.line}
+            <LineBadge line={selectedStation.line} /> 선택됨: {selectedStation.name} · {selectedStation.line}
           </p>
           <button className="station-autocomplete__reselect" onClick={reselectStation} type="button">
             다른 호선 선택
@@ -207,7 +208,10 @@ export function StationAutocomplete({
               onPointerDown={(event) => event.preventDefault()}
               role="option"
             >
-              <strong>{station.name}</strong>
+              <span className="station-autocomplete__option-name">
+                <LineBadge line={station.line} />
+                <strong>{station.name}</strong>
+              </span>
               <span>{station.line}</span>
             </li>
           ))}

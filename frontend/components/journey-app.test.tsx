@@ -73,6 +73,7 @@ describe("JourneyApp", () => {
       snapshot: idleJourneySnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     const { rerender } = render(<JourneyApp />);
@@ -84,6 +85,7 @@ describe("JourneyApp", () => {
       snapshot: activeJourneySnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -100,6 +102,7 @@ describe("JourneyApp", () => {
       },
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -115,6 +118,7 @@ describe("JourneyApp", () => {
       },
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -138,6 +142,7 @@ describe("JourneyApp", () => {
       },
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -165,6 +170,7 @@ describe("JourneyApp", () => {
       snapshot: failedSnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     render(<JourneyApp />);
@@ -182,6 +188,7 @@ describe("JourneyApp", () => {
       snapshot: idleJourneySnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     const { rerender } = render(<JourneyApp />);
@@ -198,6 +205,7 @@ describe("JourneyApp", () => {
       snapshot: completedSnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -214,6 +222,7 @@ describe("JourneyApp", () => {
       snapshot: activeJourneySnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     rerender(<JourneyApp />);
@@ -228,6 +237,7 @@ describe("JourneyApp", () => {
       snapshot: idleJourneySnapshot,
       loading: false,
       error: null,
+      lastUpdatedAt: null,
       refresh,
     });
     render(<JourneyApp />);
@@ -243,6 +253,7 @@ describe("JourneyApp", () => {
       snapshot: activeJourneySnapshot,
       loading: true,
       error: null,
+      lastUpdatedAt: null,
       refresh: vi.fn(),
     });
 

@@ -82,6 +82,7 @@ def _parse_transit_leg(leg: dict, mode: str) -> SubwayLeg:
     return SubwayLeg(
         route=route,
         line_key=tmap_route_to_line_key(route) if mode == "SUBWAY" else None,
+        mode=mode,
         section_time=int(leg.get("sectionTime", 0)),
         start_name=start_name,
         end_name=end_name,
