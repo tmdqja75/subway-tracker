@@ -1,4 +1,5 @@
 import type { BoardingLineData, BoardingLineTrain } from "../lib/boarding-line";
+import { TRAIN_ICON_SVG } from "../lib/train-icon";
 
 const STATE_LABEL: Record<BoardingLineTrain["state"], string> = {
   approaching: "접근 중",
@@ -49,10 +50,9 @@ function TrainIcon({ train }: { train: BoardingLineTrain }) {
     <span
       aria-hidden="true"
       className={`boarding-line__train-icon boarding-line__train-icon--${train.state}`}
+      dangerouslySetInnerHTML={{ __html: TRAIN_ICON_SVG }}
       style={top ? { top } : undefined}
-    >
-      🚇
-    </span>
+    />
   );
 }
 

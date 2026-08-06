@@ -11,6 +11,7 @@ COPY frontend/app ./app
 COPY frontend/components ./components
 COPY frontend/hooks ./hooks
 COPY frontend/lib ./lib
+COPY frontend/public ./public
 COPY frontend/next.config.ts frontend/next-env.d.ts frontend/postcss.config.mjs frontend/tsconfig.json ./
 RUN npm run build
 

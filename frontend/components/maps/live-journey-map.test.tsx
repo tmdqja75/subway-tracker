@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Coordinate, JourneyLegSnapshot } from "../../lib/types";
 import { activeJourneySnapshot } from "../../test/fixtures";
-import { LiveJourneyMap, geometryForLiveLeg, positionForLiveTrain } from "./live-journey-map";
+import { LiveJourneyMap, geometryForLiveLeg, headingForLiveTrain, positionForLiveTrain } from "./live-journey-map";
 
 const leaflet = vi.hoisted(() => {
   const mapInstances: Array<{ fitBounds: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; setView: ReturnType<typeof vi.fn> }> = [];
@@ -28,7 +28,7 @@ const leaflet = vi.hoisted(() => {
     });
     divIcon.mockReset().mockImplementation((options) => options);
     marker.mockReset().mockImplementation(() => {
-      const instance = { addTo: vi.fn(), remove: vi.fn(), setLatLng: vi.fn() };
+      const instance = { addTo: vi.fn(), remove: vi.fn(), setIcon: vi.fn(), setLatLng: vi.fn() };
       markerInstances.push(instance);
       return instance;
     });
@@ -123,6 +123,44 @@ describe("LiveJourneyMap", () => {
     })).toEqual([3, 4]);
   });
 
+  it("faces an arrived train toward the next station instead of defaulting north", () => {
+    const curvedLeg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
+      ...activeJourneySnapshot.leg,
+      stations: [
+        { index: 0, name: "출발", lat: 0, lon: 0 },
+        { index: 1, name: "정차", lat: 0, lon: 10 },
+        { index: 2, name: "도착", lat: 0, lon: 20 },
+      ],
+      shape: [[0, 0], [5, 5], [0, 10], [5, 15], [0, 20]] as Coordinate[],
+    };
+
+    expect(headingForLiveTrain(curvedLeg, {
+      ...activeJourneySnapshot.train!,
+      station_index: 1,
+      status: "arrived",
+      lat: 0,
+      lon: 10,
+    })).toBeCloseTo(90, 5);
+
+    expect(headingForLiveTrain(curvedLeg, {
+      ...activeJourneySnapshot.train!,
+      station_index: 2,
+      status: "arrived",
+      lat: 0,
+      lon: 20,
+    })).toBeUndefined();
+
+    // "before_leg": the feed hasn't located the train yet, so the backend
+    // reports station_index: null with the leg's first station as position.
+    expect(headingForLiveTrain(curvedLeg, {
+      ...activeJourneySnapshot.train!,
+      station_index: null,
+      status: "before_leg",
+      lat: 0,
+      lon: 0,
+    })).toBeCloseTo(90, 5);
+  });
+
   it("keeps a locally interpolated first-segment train on the curved Tmap path", () => {
     const curvedLeg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
       ...activeJourneySnapshot.leg,
@@ -178,7 +216,7 @@ describe("LiveJourneyMap", () => {
     expect(leaflet.polyline).toHaveBeenCalledWith(activeJourneySnapshot.leg.shape, expect.any(Object));
     expect(leaflet.divIcon).toHaveBeenCalledWith(expect.objectContaining({
       className: "live-journey-map__train-icon",
-      html: '<span aria-hidden="true">🚇</span>',
+      html: expect.stringContaining('<svg xmlns="http://www.w3.org/2000/svg"'),
       iconAnchor: [20, 20],
       iconSize: [40, 40],
     }));

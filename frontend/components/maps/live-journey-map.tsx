@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { TRAIN_ICON_SVG } from "../../lib/train-icon";
 import type { Coordinate, JourneyLegSnapshot, TrainStatus } from "../../lib/types";
 
 type LiveJourneyMapProps = {
@@ -14,6 +15,7 @@ type TrainMarker = {
   addTo: (map: any) => unknown;
   remove: () => void;
   setLatLng: (latLng: Coordinate) => unknown;
+  setIcon: (icon: LeafletIcon) => unknown;
 };
 
 type LeafletIcon = import("leaflet").DivIcon;
@@ -84,11 +86,25 @@ function closestShapeIndex(geometry: Coordinate[], station: Coordinate, fromInde
   return closestIndex;
 }
 
-function pointAtDistanceFraction(geometry: Coordinate[], fraction: number): Coordinate {
+/** Bearing in degrees clockwise from north — matches the icon's default up-facing orientation. */
+function bearingDegrees(from: Coordinate, to: Coordinate): number {
+  const lat1 = from[0] * Math.PI / 180;
+  const lat2 = to[0] * Math.PI / 180;
+  const dLon = (to[1] - from[1]) * Math.PI / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+/** Point along the polyline at `fraction`, plus the local tangent heading of the segment it lands on. */
+function pointAndHeadingAtDistanceFraction(
+  geometry: Coordinate[],
+  fraction: number,
+): { position: Coordinate; heading: number | undefined } {
   const lengths = geometry.slice(1).map((point, index) => distanceMeters(geometry[index], point));
   const totalLength = lengths.reduce((total, length) => total + length, 0);
   if (totalLength <= 0) {
-    return geometry[0];
+    return { position: geometry[0], heading: undefined };
   }
 
   const targetDistance = totalLength * Math.min(Math.max(fraction, 0), 1);
@@ -99,29 +115,33 @@ function pointAtDistanceFraction(geometry: Coordinate[], fraction: number): Coor
       const segmentFraction = length === 0 ? 0 : (targetDistance - traversed) / length;
       const start = geometry[index];
       const end = geometry[index + 1];
-      return [
+      const position: Coordinate = [
         start[0] + (end[0] - start[0]) * segmentFraction,
         start[1] + (end[1] - start[1]) * segmentFraction,
       ];
+      return { position, heading: length === 0 ? undefined : bearingDegrees(start, end) };
     }
     traversed += length;
   }
-  return geometry[geometry.length - 1];
+  const position = geometry[geometry.length - 1];
+  const previous = geometry[geometry.length - 2];
+  return { position, heading: previous ? bearingDegrees(previous, position) : undefined };
 }
 
 /**
  * Seoul's feed reports station-relative state, while the backend provides a
  * coarse straight-line interpolation. Reproject that progress over Tmap's
  * route shape so the marker follows the visible rail curve without implying
- * GPS-level accuracy.
+ * GPS-level accuracy. Heading is read from the same shape segment so the
+ * train's facing always matches the curve it's drawn on, not the straight
+ * line between the (potentially far apart) station nodes.
  */
-export function positionForLiveTrain(
+function resolveLiveTrainPlacement(
   leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
   train: TrainStatus,
-): Coordinate {
-  const fallback: Coordinate = [train.lat, train.lon];
+): { position: Coordinate; heading: number | undefined } | null {
   if (!Number.isFinite(train.lat) || !Number.isFinite(train.lon) || train.station_index === null) {
-    return fallback;
+    return null;
   }
 
   const startStationIndex = train.status === "between"
@@ -133,12 +153,12 @@ export function positionForLiveTrain(
       ? train.station_index
       : null;
   if (startStationIndex === null || startStationIndex < 0 || startStationIndex >= leg.stations.length - 1) {
-    return fallback;
+    return null;
   }
 
   const geometry = leg.shape.filter(isFiniteCoordinate);
   if (geometry.length < 2) {
-    return fallback;
+    return null;
   }
 
   const startStation = leg.stations[startStationIndex];
@@ -149,16 +169,48 @@ export function positionForLiveTrain(
   const segmentLon = end[1] - start[1];
   const segmentLengthSquared = segmentLat ** 2 + segmentLon ** 2;
   if (segmentLengthSquared === 0) {
-    return fallback;
+    return null;
   }
 
   const progress = ((train.lat - start[0]) * segmentLat + (train.lon - start[1]) * segmentLon) / segmentLengthSquared;
   const shapeStartIndex = closestShapeIndex(geometry, start);
   const shapeEndIndex = closestShapeIndex(geometry, end, shapeStartIndex);
   if (shapeEndIndex <= shapeStartIndex) {
-    return fallback;
+    return null;
   }
-  return pointAtDistanceFraction(geometry.slice(shapeStartIndex, shapeEndIndex + 1), progress);
+  return pointAndHeadingAtDistanceFraction(geometry.slice(shapeStartIndex, shapeEndIndex + 1), progress);
+}
+
+export function positionForLiveTrain(
+  leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
+  train: TrainStatus,
+): Coordinate {
+  return resolveLiveTrainPlacement(leg, train)?.position ?? [train.lat, train.lon];
+}
+
+/**
+ * A train sitting exactly on a station node (e.g. "arrived") has no shape
+ * segment to project onto, so resolveLiveTrainPlacement reports no heading.
+ * Rather than defaulting to the icon's north-facing rest orientation, face
+ * it toward the next station on the route. A null station_index (the
+ * "before_leg" status, before the feed has located the train) is reported
+ * with the leg's first station as its position, so treat it as index 0.
+ */
+export function headingForLiveTrain(
+  leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
+  train: TrainStatus,
+): number | undefined {
+  const heading = resolveLiveTrainPlacement(leg, train)?.heading;
+  if (heading !== undefined) {
+    return heading;
+  }
+  const stationIndex = train.station_index ?? 0;
+  if (stationIndex < 0 || stationIndex >= leg.stations.length - 1) {
+    return undefined;
+  }
+  const start = leg.stations[stationIndex];
+  const end = leg.stations[stationIndex + 1];
+  return bearingDegrees([start.lat, start.lon], [end.lat, end.lon]);
 }
 
 function hasTrainPosition(train: TrainStatus | null): train is TrainStatus {
@@ -177,17 +229,20 @@ function syncTrainMarker(
   }
 
   const position = positionForLiveTrain(leg, train);
-  if (resource.trainMarker) {
-    resource.trainMarker.setLatLng(position);
-    return;
-  }
-
+  const heading = headingForLiveTrain(leg, train);
   const icon = resource.leaflet.divIcon({
     className: "live-journey-map__train-icon",
-    html: '<span aria-hidden="true">🚇</span>',
+    html: `<span aria-hidden="true" style="display:block;width:100%;height:100%;transform:rotate(${heading ?? 0}deg)">${TRAIN_ICON_SVG}</span>`,
     iconAnchor: [20, 20],
     iconSize: [40, 40],
   });
+
+  if (resource.trainMarker) {
+    resource.trainMarker.setLatLng(position);
+    resource.trainMarker.setIcon(icon);
+    return;
+  }
+
   resource.trainMarker = resource.leaflet.marker(position, {
     alt: `${train.train_no} 열차 위치`,
     icon,
