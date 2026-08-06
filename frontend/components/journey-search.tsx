@@ -57,10 +57,10 @@ function RouteHistorySection({
             >
               <span aria-hidden="true" className="route-history__stations">
                 <LineBadge line={route.start.line} />
-                <span>{route.start.name}</span>
+                <span className="route-history__station">{route.start.name}</span>
                 <span className="route-history__arrow">→</span>
                 <LineBadge line={route.end.line} />
-                <span>{route.end.name}</span>
+                <span className="route-history__station">{route.end.name}</span>
               </span>
             </button>
           </li>
@@ -224,6 +224,11 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
         />
       </div>
 
+      {requestError ? <p className="field-error" role="alert">{requestError}</p> : null}
+      <Button disabled={isLoading} type="submit" variant="primary">
+        {isLoading ? "경로를 찾는 중이에요…" : "경로 찾기"}
+      </Button>
+
       <div className="route-history" aria-label="저장된 경로">
         <RouteHistorySection
           failed={historyFailed}
@@ -242,11 +247,6 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
           onRouteSelect={applyRouteHistory}
         />
       </div>
-
-      {requestError ? <p className="field-error" role="alert">{requestError}</p> : null}
-      <Button disabled={isLoading} type="submit" variant="primary">
-        {isLoading ? "경로를 찾는 중이에요…" : "경로 찾기"}
-      </Button>
     </form>
   );
 }

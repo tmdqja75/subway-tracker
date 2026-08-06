@@ -420,14 +420,25 @@ h2 {
 }
 
 .route-history__stations {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 64px) 16px 42px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
 }
 
 .route-history__arrow {
   color: #526477;
+  text-align: center;
+}
+
+.route-history__station {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.route-history__station:first-of-type {
+  text-align: right;
 }
 
 .route-history__message {
@@ -1017,37 +1028,35 @@ h2 {
 
 .boarding-line__train-icon {
   z-index: 2;
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: var(--line-color, #5b6570);
-  box-shadow: 0 2px 8px rgba(16, 35, 63, 0.3);
-  color: #fff;
-  font-size: 0.6875rem;
+  width: 60px;
+  height: 60px;
+  filter: drop-shadow(0 1px 2px rgba(16, 35, 63, 0.35));
 }
 
-.boarding-line__train-icon--departed {
-  background: #7c8ea3;
+.boarding-line__train-icon svg rect[fill="#000000"] {
+  fill: var(--line-color, #5b6570);
 }
 
-.boarding-line__train-icon--arrived {
-  background: #3c9c69;
+.boarding-line__train-icon--departed svg rect[fill="#000000"] {
+  fill: #7c8ea3;
+}
+
+.boarding-line__train-icon--arrived svg rect[fill="#000000"] {
+  fill: #3c9c69;
 }
 
 .boarding-line__gap .boarding-line__train-icon {
   position: absolute;
   left: 50%;
-  transform: translate(-50%, -50%);
+  /* Stations render top-to-bottom in travel-direction order, so the train always heads down. */
+  transform: translate(-50%, -50%) rotate(180deg);
 }
 
 .boarding-line__station .boarding-line__train-icon {
   position: absolute;
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) rotate(180deg);
 }
 
 .boarding-line__train-pill {
@@ -1218,17 +1227,19 @@ h2 {
 }
 
 .live-journey-map__train-icon {
-  display: grid;
   width: 40px !important;
   height: 40px !important;
-  place-items: center;
-  border: 2px solid #ffffff;
-  border-radius: 50%;
-  background: var(--line-color, #5b6570);
-  box-shadow: 0 2px 8px rgb(16 35 63 / 0.3);
-  color: #ffffff;
-  font-size: 1.25rem;
-  line-height: 1;
+}
+
+.live-journey-map__train-icon span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 2px 3px rgb(16 35 63 / 0.4));
+}
+
+.live-journey-map__train-icon svg rect[fill="#000000"] {
+  fill: var(--line-color, #5b6570);
 }
 
 .live-journey-map__fallback {
