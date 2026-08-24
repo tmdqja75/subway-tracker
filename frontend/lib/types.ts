@@ -47,6 +47,8 @@ export interface Itinerary {
   fare: number | null;
   legs: SubwayLeg[];
   summary: string[];
+  /** True when this itinerary was built from an opposite-direction cache hit. */
+  is_reversed: boolean;
 }
 
 export interface ArrivingTrain {

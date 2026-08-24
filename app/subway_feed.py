@@ -153,14 +153,22 @@ def _leg_station_indices(snapshot: list[StationSnapshot], leg: SubwayLeg) -> lis
 
 
 def _leg_direction(line_key: str, indices: list[int | None]) -> int | None:
-    """+1 (dn) or -1 (up): whichever direction reaches indices[1] from
-    indices[0] in one _step hop. None if unresolved or not one hop apart."""
+    """+1 (dn) or -1 (up): the shortest direction to indices[1].
+
+    An express leg's stations list only holds actual stops, so the second
+    station can sit beyond a skipped local-only stop. On a loop, both
+    directions can eventually reach the next stop; choosing the shorter route
+    prevents the direction from being inverted merely because +1 is checked
+    first. None means the stations are unresolved or unreachable.
+    """
     if len(indices) < 2 or indices[0] is None or indices[1] is None:
         return None
-    for direction in (1, -1):
-        if _step(line_key, indices[0], direction) == indices[1]:
-            return direction
-    return None
+    distances = [
+        (distance, direction)
+        for direction in (1, -1)
+        if (distance := _stations_between(line_key, indices[0], indices[1], direction)) is not None
+    ]
+    return min(distances, default=(None, None))[1]
 
 
 def _train_bucket(line_key: str, station: StationSnapshot, direction: int) -> list[TrainEntry]:

@@ -136,8 +136,27 @@ def test_leg_direction_detects_dn_and_up():
     assert _leg_direction("3호선", [2, 1]) == -1
 
 
-def test_leg_direction_none_when_stations_are_not_one_hop_apart():
-    assert _leg_direction("3호선", [0, 2]) is None
+def test_leg_direction_chooses_the_direct_line_2_loop_direction():
+    # Both directions can eventually reach any main-loop station. The rider's
+    # next stop must use the direct hop, not the first direction checked.
+    assert _leg_direction("2호선", [10, 9]) == -1
+    assert _leg_direction("2호선", [10, 12]) == 1
+
+
+def test_leg_direction_resolves_across_a_skipped_express_stop():
+    # 급행 leg.stations holds only actual stops, so an express leg from
+    # 고속터미널(idx 0) to 신논현(idx 2) skips 사평(idx 1) entirely — journey
+    # #124 showed no boardable trains because this used to require indices
+    # exactly one hop apart.
+    assert _leg_direction("9호선", [0, 2]) == 1
+    assert _leg_direction("9호선", [2, 0]) == -1
+
+
+def test_leg_direction_none_when_target_unreachable():
+    # idx 47 sits on line 2's branch; forward from main-loop idx 5 wraps at
+    # the 42->0 seam before ever reaching it, and backward from 5 only goes
+    # further negative — unreachable in either direction.
+    assert _leg_direction("2호선", [5, 47]) is None
 
 
 def test_leg_direction_none_when_first_station_unresolved():
@@ -380,6 +399,26 @@ async def test_fetch_boarding_context_returns_stations_before_boarding_farthest_
     context = await fetch_boarding_context("http://subway.test", leg)
 
     assert context == ["W", "X", "Y"]
+
+
+@respx.mock
+async def test_fetch_boarding_context_line_2_does_not_repeat_the_forward_leg(monkeypatch):
+    """A Line 2 loop can reach the next station in both directions.
+
+    The context before 왕십리 must come from 한양대/뚝섬, not from the leg's
+    own upcoming 상왕십리/신당/동대문역사문화공원 stations.
+    """
+    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
+    names = [f"역{i}" for i in range(43)]
+    names[7:14] = ["동대문역사문화공원", "신당", "상왕십리", "왕십리", "한양대", "뚝섬", "성수"]
+    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
+        return_value=httpx.Response(200, json=_payload(*[(name, [], []) for name in names]))
+    )
+    leg = _leg("2호선", "왕십리", "상왕십리", "신당", "동대문역사문화공원")
+
+    context = await fetch_boarding_context("http://subway.test", leg)
+
+    assert context == ["성수", "뚝섬", "한양대"]
 
 
 @respx.mock

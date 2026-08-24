@@ -557,6 +557,47 @@ async def test_transfer_walk_linestring_logged_before_next_subway_leg(manager, m
     assert (37.4767, 126.9813) in logged
 
 
+async def test_log_transfer_walk_is_idempotent_across_retries(manager):
+    first = SubwayLeg(
+        route="수도권2호선", line_key=None, section_time=120,
+        start_name="강남", end_name="사당",
+        stations=[
+            LegStation(index=0, name="강남", lat=37.4980, lon=127.0277),
+            LegStation(index=1, name="사당", lat=37.4766, lon=126.9816),
+        ],
+        shape=[[37.4980, 127.0277], [37.4766, 126.9816]],
+        transfer_walk_time=120,
+        transfer_walk_shape=[
+            [37.4766, 126.9816],
+            [37.4767, 126.9813],
+            [37.4768, 126.9817],
+        ],
+    )
+    second = SubwayLeg(
+        route="수도권4호선", line_key=None, section_time=120,
+        start_name="사당", end_name="서울역",
+        stations=[
+            LegStation(index=0, name="사당", lat=37.4768, lon=126.9817),
+            LegStation(index=1, name="서울역", lat=37.5535, lon=126.9728),
+        ],
+        shape=[[37.4768, 126.9817], [37.5535, 126.9728]],
+    )
+    itinerary = Itinerary(
+        total_time=360, transfer_count=1, total_walk_time=120, fare=1600,
+        legs=[first, second],
+        summary=["🚇 수도권2호선: 강남 → 사당", "🚶 도보 2분", "🚇 수도권4호선: 사당 → 서울역"],
+    )
+    j = await manager.start_journey(itinerary)
+    manager._emit_at(j, first.stations[-1].lat, first.stations[-1].lon, 1_000_000, estimated=False)
+
+    # simulate a crashed/retried board() call re-running the same walk log
+    manager._log_transfer_walk(j, 0, 1_000_100)
+    manager._log_transfer_walk(j, 0, 1_000_200)
+
+    points = manager.db.get_points(j.id, leg_idx=0)
+    assert len(points) == len(first.transfer_walk_shape)
+
+
 async def test_missed_train_returns_to_picker(manager, monkeypatch):
     async def fake_locate_train(base_url, leg, train_no):
         return None

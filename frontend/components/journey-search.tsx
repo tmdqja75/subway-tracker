@@ -56,11 +56,15 @@ function RouteHistorySection({
               type="button"
             >
               <span aria-hidden="true" className="route-history__stations">
-                <LineBadge line={route.start.line} />
-                <span className="route-history__station">{route.start.name}</span>
-                <span className="route-history__arrow">→</span>
-                <LineBadge line={route.end.line} />
-                <span className="route-history__station">{route.end.name}</span>
+                <span className="route-history__station-row">
+                  <LineBadge line={route.start.line} />
+                  <span className="route-history__station">{route.start.name}</span>
+                </span>
+                <span className="route-history__station-row">
+                  <span className="route-history__arrow">→</span>
+                  <LineBadge line={route.end.line} />
+                  <span className="route-history__station">{route.end.name}</span>
+                </span>
               </span>
             </button>
           </li>
