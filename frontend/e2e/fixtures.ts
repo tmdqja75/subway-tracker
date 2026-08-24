@@ -63,6 +63,7 @@ export const itineraries: Itinerary[] = [
     transfer_count: 0,
     total_walk_time: 120,
     fare: 1_400,
+    is_reversed: false,
     summary: ["강남에서 2호선 탑승", "홍대입구 하차"],
     legs: [
       {
@@ -84,6 +85,7 @@ export const itineraries: Itinerary[] = [
     transfer_count: 1,
     total_walk_time: 300,
     fare: 1_400,
+    is_reversed: false,
     summary: ["강남에서 9호선 탑승", "환승 후 홍대입구 하차"],
     legs: [
       {

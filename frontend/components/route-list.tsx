@@ -115,6 +115,11 @@ export function RouteList({ itineraries, onBack, onStarted }: RouteListProps) {
                     ? "실시간 안내 미지원 구간이 있어 시간 기준으로 안내됩니다."
                     : "실시간 안내가 가능한 구간은 탑승 후 현재 흐름으로 안내됩니다."}
                 </span>
+                {itinerary.is_reversed ? (
+                  <span className="route-card__coverage">
+                    🔄 반대 방향으로 저장된 경로를 기반으로 안내돼요.
+                  </span>
+                ) : null}
                 <span className="route-card__action">
                   {isStarting ? "여정을 시작하는 중이에요…" : "이 경로로 시작"}
                 </span>

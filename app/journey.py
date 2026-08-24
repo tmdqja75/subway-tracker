@@ -285,6 +285,7 @@ class JourneyManager:
         j.transfer_sent_points = None
         j.transfer_total_points = None
         j.prepare_leg()
+        log.info("journey %s: boarded train_no=%s mode=%s leg=%s", j.id, train_no, j.tracking_mode, j.leg_idx)
         # user is standing on the platform: log the boarding station now
         start = j.leg.stations[0]
         self._emit(j, start.lat, start.lon, estimated=False)
@@ -799,6 +800,16 @@ class JourneyManager:
         prev_leg = j.itinerary.legs[prev_leg_idx]
         pts = prev_leg.transfer_walk_shape
         if not pts:
+            return
+        # board()/begin_realtime_tracking_from_onboard() can be retried (e.g. a
+        # restart between the point writes and the state commit); guard against
+        # writing the same walk twice by checking for its known endpoint
+        # (the next leg's boarding station, never part of prev_leg's own ride).
+        end_lat, end_lon = pts[-1]
+        if any(
+            abs(p.lat - end_lat) < 1e-7 and abs(p.lon - end_lon) < 1e-7
+            for p in self.db.get_points(j.id, leg_idx=prev_leg_idx)
+        ):
             return
 
         if j.transfer_started_at is None or j.transfer_started_at > now:

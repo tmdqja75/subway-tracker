@@ -68,6 +68,9 @@ class Itinerary(BaseModel):
     fare: int | None
     legs: list[SubwayLeg]
     summary: list[str]  # human-readable leg descriptions incl. walks
+    # True when built by reverse_itinerary() from an opposite-direction cache
+    # hit rather than parsed straight from a Tmap response.
+    is_reversed: bool = False
 
 
 class ArrivingTrain(BaseModel):

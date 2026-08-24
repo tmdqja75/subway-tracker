@@ -5,11 +5,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import router
-from app.db import Database
+from app.db import ROUTE_OPTIONS_CACHE_FORMAT_VERSION, Database
 from app.models import ArrivingTrain, Itinerary, LegStation, OnboardTrain, Station, SubwayLeg
 from app.stations import StationRegistry
 from app.subway_feed import SubwayApiError
-from app.tmap import TmapRouteSearchResult
+from app.tmap import TmapRouteSearchResult, reverse_itinerary
 
 
 def make_itinerary(route: str = "수도권2호선") -> Itinerary:
@@ -94,6 +94,66 @@ def test_routes_reuses_cache_for_same_station_names_and_lines(tmp_path, monkeypa
     assert cached_raw == '{"call":1}'
 
 
+def test_routes_appends_reversed_itinerary_to_a_fresh_tmap_search(tmp_path, monkeypatch):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    # a real 사당->강남 search result, cached under the opposite direction
+    db.cache_route_options("사당", "2호선", "강남", "2호선", [reverse_itinerary(make_itinerary())])
+
+    async def fake_search_routes_with_raw_response(app_key, start_lon, start_lat, end_lon, end_lat):
+        return TmapRouteSearchResult(
+            itineraries=[make_itinerary(route="수도권2호선-fresh")],
+            raw_response_json='{"call":1}',
+        )
+
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fake_search_routes_with_raw_response)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/routes",
+        json={"start": "강남", "end": "사당", "start_id": "gangnam-2", "end_id": "sadang-2"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert body[0]["is_reversed"] is False
+    assert body[0]["summary"] == ["🚇 수도권2호선-fresh: 강남 → 사당"]
+    assert body[1]["is_reversed"] is True
+    assert body[1]["legs"][0]["start_name"] == "강남"
+    assert body[1]["legs"][0]["end_name"] == "사당"
+    assert [s["name"] for s in body[1]["legs"][0]["stations"]] == ["강남", "사당"]
+
+    # the forward cache now holds the genuine fetched result, not the reversed one
+    forward_cached = db.get_cached_route_options("강남", "2호선", "사당", "2호선")
+    assert len(forward_cached) == 1
+    assert forward_cached[0].is_reversed is False
+
+
+def test_routes_appends_reversed_itinerary_to_an_existing_forward_cache_hit(tmp_path, monkeypatch):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    db.cache_route_options("강남", "2호선", "사당", "2호선", [make_itinerary()])
+    db.cache_route_options("사당", "2호선", "강남", "2호선", [reverse_itinerary(make_itinerary())])
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("Tmap should not be called on a forward cache hit")
+
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fail_if_called)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/routes",
+        json={"start": "강남", "end": "사당", "start_id": "gangnam-2", "end_id": "sadang-2"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    assert body[0]["is_reversed"] is False
+    assert body[1]["is_reversed"] is True
+
+
 def test_cache_route_options_stores_raw_tmap_response(tmp_path):
     db = Database(tmp_path / "tracker.db")
     raw_response = '{"metaData":{"plan":{"itineraries":[]}}}'
@@ -154,7 +214,7 @@ def test_database_clears_stale_route_cache_when_cache_format_version_changes(tmp
     version = migrated.conn.execute(
         "SELECT value FROM app_meta WHERE key = 'route_options_cache_format_version'"
     ).fetchone()["value"]
-    assert version == "3"
+    assert version == ROUTE_OPTIONS_CACHE_FORMAT_VERSION
 
 
 def test_board_rechecks_that_selected_train_is_still_approaching(tmp_path, monkeypatch):

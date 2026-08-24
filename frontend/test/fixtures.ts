@@ -22,6 +22,7 @@ export const itinerary: Itinerary = {
   transfer_count: 0,
   total_walk_time: 0,
   fare: 1400,
+  is_reversed: false,
   summary: ["강남에서 2호선 탑승"],
   legs: [
     {

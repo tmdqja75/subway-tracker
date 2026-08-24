@@ -63,6 +63,13 @@ describe("RouteList", () => {
     expect(screen.getByText("요금 정보 없음")).toBeVisible();
   });
 
+  it("notes when an itinerary comes from a reversed cache hit", () => {
+    const reversedItinerary: Itinerary = { ...itinerary, is_reversed: true };
+    render(<RouteList itineraries={[itinerary, reversedItinerary]} onBack={vi.fn()} onStarted={vi.fn()} />);
+
+    expect(screen.getByText("🔄 반대 방향으로 저장된 경로를 기반으로 안내돼요.")).toBeVisible();
+  });
+
   it("filters out itineraries with a bus leg", () => {
     render(<RouteList itineraries={[itinerary, busItinerary]} onBack={vi.fn()} onStarted={vi.fn()} />);
 

@@ -96,6 +96,54 @@ def _transit_summary(mode: str, leg: SubwayLeg) -> str:
     return f"{emoji} {leg.route}: {leg.start_name} → {leg.end_name}"
 
 
+def reverse_itinerary(itinerary: Itinerary) -> Itinerary:
+    """Flip an itinerary to the opposite travel direction.
+
+    Used to serve a same-route-different-direction cache hit (e.g. a search
+    for A->B when only a cached B->A exists) as a real, trackable itinerary:
+    every leg's stations/geometry must actually run start-to-end in the new
+    direction, not just swap display labels.
+    """
+    legs = itinerary.legs
+    last = len(legs) - 1
+    new_legs = []
+    for k, leg in enumerate(reversed(legs)):
+        # the walk after original leg[last-k-1] sits between it and leg[last-k]
+        # (=`leg` here); reversed, that pair's walk belongs after `leg`'s twin.
+        walk_source = legs[last - k - 1] if k < last else None
+        new_legs.append(
+            SubwayLeg(
+                route=leg.route,
+                line_key=leg.line_key,
+                mode=leg.mode,
+                section_time=leg.section_time,
+                start_name=leg.end_name,
+                end_name=leg.start_name,
+                stations=[
+                    LegStation(index=i, name=s.name, lat=s.lat, lon=s.lon)
+                    for i, s in enumerate(reversed(leg.stations))
+                ],
+                shape=list(reversed(leg.shape)),
+                transfer_walk_shape=list(reversed(walk_source.transfer_walk_shape)) if walk_source else [],
+                transfer_walk_time=walk_source.transfer_walk_time if walk_source else 0,
+            )
+        )
+    summary = []
+    for leg in new_legs:
+        summary.append(_transit_summary(leg.mode, leg))
+        if leg.transfer_walk_time >= 60:
+            summary.append(f"🚶 도보 {leg.transfer_walk_time // 60}분")
+    return Itinerary(
+        total_time=itinerary.total_time,
+        transfer_count=itinerary.transfer_count,
+        total_walk_time=itinerary.total_walk_time,
+        fare=itinerary.fare,
+        legs=new_legs,
+        summary=summary,
+        is_reversed=True,
+    )
+
+
 def _parse_itineraries(data: dict) -> list[Itinerary]:
     plan = data.get("metaData", {}).get("plan")
     if not plan:

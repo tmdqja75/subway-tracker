@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
 from .stations import normalize_name
 from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
-from .tmap import TmapError, search_routes_with_raw_response
+from .tmap import TmapError, reverse_itinerary, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -85,21 +85,36 @@ async def routes(request: Request, body: RouteSearchRequest):
             cache_key[0], cache_key[1], cache_key[2], cache_key[3],
         )
         db.touch_cached_route_options(*cache_key)
-        return [it.model_dump() for it in cached]
-    try:
-        route_search = await search_routes_with_raw_response(
-            settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
+        itineraries = cached
+    else:
+        log.info("Tmap poll start=%s end=%s", start.name, end.name)
+        try:
+            route_search = await search_routes_with_raw_response(
+                settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
+            )
+        except TmapError as e:
+            raise HTTPException(502, str(e))
+        itineraries = route_search.itineraries
+        if not itineraries:
+            raise HTTPException(404, "no subway routes found")
+        db.cache_route_options(
+            *cache_key,
+            itineraries,
+            raw_tmap_response=route_search.raw_response_json,
         )
-    except TmapError as e:
-        raise HTTPException(502, str(e))
-    itineraries = route_search.itineraries
-    if not itineraries:
-        raise HTTPException(404, "no subway routes found")
-    db.cache_route_options(
-        *cache_key,
-        itineraries,
-        raw_tmap_response=route_search.raw_response_json,
-    )
+
+    # A same-route-opposite-direction cache hit is an extra option, never a
+    # replacement for the itineraries above — riders should see both.
+    reverse_key = _route_cache_key(end, start)
+    reverse_cached = db.get_cached_route_options(*reverse_key)
+    if reverse_cached is not None:
+        log.debug(
+            "route cache hit (reversed, appended) start=%s/%s end=%s/%s",
+            cache_key[0], cache_key[1], cache_key[2], cache_key[3],
+        )
+        db.touch_cached_route_options(*reverse_key)
+        itineraries = [*itineraries, *(reverse_itinerary(it) for it in reverse_cached)]
+
     return [it.model_dump() for it in itineraries]
 
 
@@ -146,6 +161,7 @@ async def arrivals(request: Request):
     leg = j.leg
     if not leg.line_key:
         return {"covered": False, "trains": [], "already_onboard": [], "context_before": []}
+    log.info("subway api poll line=%s station=%s", leg.line_key, leg.start_name)
     trains = await _fetch_leg_arrivals(settings, leg)
     try:
         already_onboard = await _fetch_leg_onboard(settings, leg)
