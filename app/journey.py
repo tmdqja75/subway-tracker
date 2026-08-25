@@ -19,7 +19,7 @@ import time
 from .config import Settings
 from .db import Database
 from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
-from .reitti import ReittiError, push_points
+from .reitti import ReittiError, commit_workbench_patch, push_points
 from .stations import normalize_name
 from .subway_feed import LegTrainStatus, SubwayApiError, locate_train
 
@@ -548,6 +548,22 @@ class JourneyManager:
         if j.state != JourneyState.PUSH_FAILED:
             raise ValueError(f"nothing to retry in state {j.state}")
         self._start_push(j)
+
+    async def commit_to_timeline(self) -> None:
+        """Stitch this completed journey's points onto the Reitti main timeline (Workbench insert+save)."""
+        j = self._require_active()
+        if j.state != JourneyState.COMPLETED:
+            raise ValueError(f"nothing to commit in state {j.state}")
+        points = self.db.get_points(j.id)
+        if not points:
+            return
+        await commit_workbench_patch(
+            self.settings.reitti_url,
+            self.settings.reitti_token,
+            self.settings.reitti_device_id,
+            points[0].ts * 1000,
+            points[-1].ts * 1000,
+        )
 
     async def retry_debug_push(self, journey_id: int) -> None:
         """Send retained points for an eligible terminal debug-history record."""

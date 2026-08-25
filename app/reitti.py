@@ -75,3 +75,36 @@ async def push_points(
                 await on_progress(sent)
             await asyncio.sleep(0.05)  # be gentle
     return sent
+
+
+async def commit_workbench_patch(
+    base_url: str,
+    token: str,
+    device_id: str,
+    t_start_ms: int,
+    t_end_ms: int,
+) -> None:
+    """Stitch a device's data onto the main timeline (the Workbench "insert" + "save" action).
+
+    Same API token as ingest authenticates this call (it resolves to the same
+    user+device via reitti's TokenAuthenticationFilter).
+    """
+    url = f"{base_url.rstrip('/')}/api/v2/workbench/commit"
+    body = {
+        "editStore": {
+            "patches": [
+                {"seq": 0, "tStart": t_start_ms, "tEnd": t_end_ms, "deviceId": device_id}
+            ]
+        }
+    }
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            resp = await client.post(url, headers={"X-API-Token": token}, json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError as e:
+            raise ReittiError(f"Reitti workbench commit unreachable: {e}", reason="connection") from e
+        if not data.get("success"):
+            raise ReittiError(
+                f"Reitti workbench commit failed: {data.get('message')}", reason="rejected"
+            )
