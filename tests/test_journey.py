@@ -226,6 +226,54 @@ async def test_failed_push_exposes_details_and_retry_resends_all_points(manager,
     }
 
 
+async def test_commit_to_timeline_sends_the_journey_time_range(manager, monkeypatch):
+    calls = []
+
+    async def fake_commit(url, token, device_id, t_start_ms, t_end_ms):
+        calls.append((url, token, device_id, t_start_ms, t_end_ms))
+
+    monkeypatch.setattr(journey_mod, "commit_workbench_patch", fake_commit)
+    j = await manager.start_journey(make_itinerary())
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4909, lon=127.0553, ts=2, estimated=False))
+    j.state = JourneyState.COMPLETED
+    manager.db.update_journey(j.id, state=JourneyState.COMPLETED)
+
+    await manager.commit_to_timeline()
+
+    assert calls == [("http://reitti.test", "t", manager.settings.reitti_device_id, 1000, 2000)]
+
+
+async def test_commit_to_timeline_requires_a_completed_journey(manager, monkeypatch):
+    called = False
+
+    async def fake_commit(*args):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(journey_mod, "commit_workbench_patch", fake_commit)
+    j = await manager.start_journey(make_itinerary())
+
+    with pytest.raises(ValueError):
+        await manager.commit_to_timeline()
+
+    assert called is False
+
+
+async def test_commit_to_timeline_propagates_reitti_errors(manager, monkeypatch):
+    async def fake_commit(url, token, device_id, t_start_ms, t_end_ms):
+        raise ReittiError("boom", reason="rejected")
+
+    monkeypatch.setattr(journey_mod, "commit_workbench_patch", fake_commit)
+    j = await manager.start_journey(make_itinerary())
+    manager.db.add_point(j.id, 0, TrackPoint(lat=37.4837, lon=127.0354, ts=1, estimated=False))
+    j.state = JourneyState.COMPLETED
+    manager.db.update_journey(j.id, state=JourneyState.COMPLETED)
+
+    with pytest.raises(ReittiError):
+        await manager.commit_to_timeline()
+
+
 async def test_debug_retry_push_resends_cancelled_journey_points(manager, monkeypatch):
     pushed = []
 

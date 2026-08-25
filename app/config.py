@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     subway_api_url: str = "http://localhost:8000"
     reitti_url: str = ""
     reitti_token: str = ""
+    reitti_device_id: str = "3"
 
     poll_interval_seconds: int = 5
     log_level: str = "INFO"

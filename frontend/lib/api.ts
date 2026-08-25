@@ -166,6 +166,13 @@ export function retryCurrentJourneyPush(signal?: AbortSignal): Promise<OkRespons
   });
 }
 
+export function commitCurrentJourneyTimeline(signal?: AbortSignal): Promise<OkResponse> {
+  return requestJson<OkResponse>("/api/journeys/current/commit-timeline", {
+    method: "POST",
+    signal,
+  });
+}
+
 export function getCurrentJourneyPoints(signal?: AbortSignal): Promise<TrackPoint[]> {
   return requestJson<TrackPoint[]>("/api/journeys/current/points", { method: "GET", signal });
 }

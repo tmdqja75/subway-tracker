@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
+from .reitti import ReittiError
 from .stations import normalize_name
 from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
 from .tmap import TmapError, reverse_itinerary, search_routes_with_raw_response
@@ -251,6 +252,17 @@ async def retry_push(request: Request):
         await request.app.state.manager.retry_push()
     except ValueError as e:
         raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@router.post("/journeys/current/commit-timeline")
+async def commit_timeline(request: Request):
+    try:
+        await request.app.state.manager.commit_to_timeline()
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except ReittiError as e:
+        raise HTTPException(502, str(e))
     return {"ok": True}
 
 

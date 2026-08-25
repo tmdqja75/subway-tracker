@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { retryCurrentJourneyPush } from "../lib/api";
+import { commitCurrentJourneyTimeline, retryCurrentJourneyPush } from "../lib/api";
 import type { ActiveJourneySnapshot, PushFailureTransfer } from "../lib/types";
 import { CompletedJourneyMap } from "./maps/completed-journey-map";
 import { Button } from "./ui/button";
@@ -17,6 +17,7 @@ type TransferStatusProps = {
 };
 
 const RETRY_ERROR = "이동 기록을 다시 전송하지 못했어요. 잠시 후 다시 시도해 주세요.";
+const COMMIT_ERROR = "메인 타임라인에 병합하지 못했어요. 잠시 후 다시 시도해 주세요.";
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
@@ -24,6 +25,10 @@ function isAbortError(error: unknown): boolean {
 
 function retryErrorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : RETRY_ERROR;
+}
+
+function commitErrorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : COMMIT_ERROR;
 }
 
 function titleFor(state: TransferJourney["state"]): string {
@@ -77,9 +82,16 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, 
   const retryControllerRef = useRef<AbortController | null>(null);
   const retryInFlightRef = useRef(false);
   const retrySequenceRef = useRef(0);
+  const [commitPending, setCommitPending] = useState(false);
+  const [commitSucceeded, setCommitSucceeded] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const commitControllerRef = useRef<AbortController | null>(null);
+  const commitInFlightRef = useRef(false);
+  const commitSequenceRef = useRef(0);
   const currentSnapshotKey = snapshotKey(journey);
   const transfer = journey.transfer;
   const locked = retryPending || retrySucceeded;
+  const commitLocked = commitPending || commitSucceeded;
 
   useEffect(
     () => () => {
@@ -87,6 +99,10 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, 
       retryControllerRef.current?.abort();
       retryControllerRef.current = null;
       retryInFlightRef.current = false;
+      commitSequenceRef.current += 1;
+      commitControllerRef.current?.abort();
+      commitControllerRef.current = null;
+      commitInFlightRef.current = false;
     },
     [],
   );
@@ -99,6 +115,13 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, 
     setRetryPending(false);
     setRetrySucceeded(false);
     setRetryError(null);
+    commitSequenceRef.current += 1;
+    commitControllerRef.current?.abort();
+    commitControllerRef.current = null;
+    commitInFlightRef.current = false;
+    setCommitPending(false);
+    setCommitSucceeded(false);
+    setCommitError(null);
   }, [currentSnapshotKey]);
 
   const retry = async () => {
@@ -131,6 +154,42 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, 
       }
     }
   };
+
+  const commit = async () => {
+    if (journey.state !== "completed" || commitInFlightRef.current || commitSucceeded) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const commitSequence = ++commitSequenceRef.current;
+    commitInFlightRef.current = true;
+    commitControllerRef.current = controller;
+    setCommitPending(true);
+    setCommitError(null);
+
+    try {
+      await commitCurrentJourneyTimeline(controller.signal);
+      if (commitSequence === commitSequenceRef.current && !controller.signal.aborted) {
+        setCommitSucceeded(true);
+      }
+    } catch (error: unknown) {
+      if (commitSequence === commitSequenceRef.current && !controller.signal.aborted && !isAbortError(error)) {
+        setCommitError(commitErrorMessage(error));
+      }
+    } finally {
+      if (commitSequence === commitSequenceRef.current && !controller.signal.aborted) {
+        commitControllerRef.current = null;
+        commitInFlightRef.current = false;
+        setCommitPending(false);
+      }
+    }
+  };
+
+  const commitLabel = commitPending
+    ? "메인 타임라인에 병합하는 중이에요…"
+    : commitSucceeded
+      ? "메인 타임라인에 병합했어요"
+      : "메인 타임라인에 병합";
 
   const retryLabel = retryPending
     ? "기록을 다시 전송하는 중이에요…"
@@ -166,6 +225,13 @@ export function TransferStatus({ journey, onJourneyRefresh, onBeginNextJourney, 
           <Button disabled={locked} onClick={() => void retry()}>{retryLabel}</Button>
           {onDeferPush ? <Button disabled={locked} onClick={onDeferPush} variant="secondary">데이터 나중에 다시 보내기</Button> : null}
           {retryError ? <p className="field-error" role="alert">{retryError}</p> : null}
+        </div>
+      ) : null}
+
+      {journey.state === "completed" ? (
+        <div className="transfer-status__commit">
+          <Button disabled={commitLocked} onClick={() => void commit()}>{commitLabel}</Button>
+          {commitError ? <p className="field-error" role="alert">{commitError}</p> : null}
         </div>
       ) : null}
 

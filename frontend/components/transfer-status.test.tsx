@@ -1,14 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { retryCurrentJourneyPush } from "../lib/api";
+import { commitCurrentJourneyTimeline, retryCurrentJourneyPush } from "../lib/api";
 import type { ActiveJourneySnapshot } from "../lib/types";
 import { activeJourneySnapshot, pushFailedJourneySnapshot } from "../test/fixtures";
 import { TransferStatus } from "./transfer-status";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/api")>();
-  return { ...original, retryCurrentJourneyPush: vi.fn() };
+  return { ...original, retryCurrentJourneyPush: vi.fn(), commitCurrentJourneyTimeline: vi.fn() };
 });
 
 vi.mock("./maps/completed-journey-map", () => ({
@@ -160,6 +160,36 @@ describe("TransferStatus", () => {
     expect(await screen.findByText("저장된 기록을 다시 전송할 수 없어요.")).toBeVisible();
     await waitFor(() => expect(screen.getByRole("button", { name: "기록을 다시 전송" })).toBeEnabled());
     expect(onJourneyRefresh).not.toHaveBeenCalled();
+  });
+
+  it("merges a completed journey onto the main timeline and disables the button once done", async () => {
+    const commit = deferred<{ ok: true }>();
+    vi.mocked(commitCurrentJourneyTimeline).mockReturnValueOnce(commit.promise);
+    render(<TransferStatus journey={transferJourney("completed")} onJourneyRefresh={vi.fn()} />);
+
+    const button = screen.getByRole("button", { name: "메인 타임라인에 병합" });
+    fireEvent.click(button);
+    expect(commitCurrentJourneyTimeline).toHaveBeenCalledTimes(1);
+    expect(commitCurrentJourneyTimeline).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(screen.getByRole("button", { name: "메인 타임라인에 병합하는 중이에요…" })).toBeDisabled();
+
+    await act(async () => {
+      commit.resolve({ ok: true });
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "메인 타임라인에 병합했어요" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "메인 타임라인에 병합했어요" }));
+    expect(commitCurrentJourneyTimeline).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a commit error and lets the rider try again", async () => {
+    vi.mocked(commitCurrentJourneyTimeline).mockRejectedValueOnce(new Error("기록을 병합하지 못했어요."));
+    render(<TransferStatus journey={transferJourney("completed")} onJourneyRefresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "메인 타임라인에 병합" }));
+    expect(await screen.findByText("기록을 병합하지 못했어요.")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "메인 타임라인에 병합" })).toBeEnabled());
   });
 
   it("aborts an in-flight retry on unmount without a late refresh or state update", async () => {
