@@ -237,6 +237,15 @@ async def missed(request: Request):
     return {"ok": True}
 
 
+@router.post("/journeys/current/stop")
+async def stop(request: Request):
+    try:
+        await request.app.state.manager.stop_and_send()
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
 @router.post("/journeys/current/cancel")
 async def cancel(request: Request):
     try:

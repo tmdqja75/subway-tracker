@@ -159,6 +159,10 @@ export function cancelCurrentJourney(signal?: AbortSignal): Promise<OkResponse> 
   return requestJson<OkResponse>("/api/journeys/current/cancel", { method: "POST", signal });
 }
 
+export function stopAndSendCurrentJourney(signal?: AbortSignal): Promise<OkResponse> {
+  return requestJson<OkResponse>("/api/journeys/current/stop", { method: "POST", signal });
+}
+
 export function retryCurrentJourneyPush(signal?: AbortSignal): Promise<OkResponse> {
   return requestJson<OkResponse>("/api/journeys/current/retry-push", {
     method: "POST",

@@ -1088,3 +1088,67 @@ async def test_onboard_tracking_rejects_origin_arrival_and_at_end_candidates_wit
 
     assert journey.state == JourneyState.AWAITING_BOARD
     assert manager.db.get_journey(journey.id)["history_estimated"] == 0
+
+
+async def test_stop_and_send_pushes_points_tracked_so_far_mid_leg(manager, monkeypatch):
+    feed = [
+        LegTrainStatus(leg_index=0, status="arrived", station_name="양재"),
+        LegTrainStatus(leg_index=0, status="departed", station_name="양재"),
+    ]
+    calls = iter(feed)
+
+    async def fake_locate_train(base_url, leg, train_no):
+        return next(calls, feed[-1])
+
+    pushed = []
+
+    async def fake_push(url, token, points, *, on_progress=None):
+        pushed.extend(points)
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "locate_train", fake_locate_train)
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+
+    j = await manager.start_journey(make_itinerary())
+    await manager.board("3001")
+    for _ in range(10):
+        await asyncio.sleep(0.05)
+        if j.anchor_phase == "segment":
+            break
+    assert j.anchor_phase == "segment"  # departed 양재, running toward 매봉
+
+    await manager.stop_and_send()
+
+    assert j.state == JourneyState.PUSHING
+    await manager._push_task
+
+    assert j.state == JourneyState.COMPLETED
+    assert pushed, "points tracked before stopping must be pushed to Reitti"
+    assert pushed[-1].lat != pytest.approx(37.4909)  # never reached 도곡
+    assert pushed[-1].estimated is True
+
+
+async def test_stop_and_send_uses_timer_progress_for_uncovered_lines(manager, monkeypatch):
+    async def fake_push(url, token, points, *, on_progress=None):
+        return len(points)
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+
+    itinerary = make_itinerary()
+    itinerary.legs[0].line_key = None  # timer mode
+    j = await manager.start_journey(itinerary)
+    await manager.board(None)
+    j.leg_started_at -= 120  # halfway through the 240s leg
+
+    await manager.stop_and_send()
+
+    assert j.state == JourneyState.PUSHING
+    await manager._push_task
+    assert j.state == JourneyState.COMPLETED
+
+
+async def test_stop_and_send_requires_an_active_ride(manager):
+    await manager.start_journey(make_itinerary())
+
+    with pytest.raises(ValueError):
+        await manager.stop_and_send()

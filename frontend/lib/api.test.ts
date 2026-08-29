@@ -14,6 +14,7 @@ import {
   searchRoutes,
   searchStations,
   startJourney,
+  stopAndSendCurrentJourney,
 } from "./api";
 import type {
   ApiErrorResponse,
@@ -231,6 +232,7 @@ describe("rider API client", () => {
       { path: "/api/journeys/current/alight", call: () => alightCurrentJourney(), method: "POST" },
       { path: "/api/journeys/current/missed", call: () => markCurrentJourneyMissed(), method: "POST" },
       { path: "/api/journeys/current/cancel", call: () => cancelCurrentJourney(), method: "POST" },
+      { path: "/api/journeys/current/stop", call: () => stopAndSendCurrentJourney(), method: "POST" },
       {
         path: "/api/journeys/current/retry-push",
         call: () => retryCurrentJourneyPush(),

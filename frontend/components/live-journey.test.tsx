@@ -5,6 +5,7 @@ import {
   alightCurrentJourney,
   cancelCurrentJourney,
   markCurrentJourneyMissed,
+  stopAndSendCurrentJourney,
 } from "../lib/api";
 import type { ActiveJourneySnapshot } from "../lib/types";
 import { activeJourneySnapshot } from "../test/fixtures";
@@ -17,6 +18,7 @@ vi.mock("../lib/api", async (importOriginal) => {
     alightCurrentJourney: vi.fn(),
     cancelCurrentJourney: vi.fn(),
     markCurrentJourneyMissed: vi.fn(),
+    stopAndSendCurrentJourney: vi.fn(),
   };
 });
 
@@ -144,6 +146,25 @@ describe("LiveJourney", () => {
     fireEvent.click(openConfirmation);
     fireEvent.click(screen.getByRole("button", { name: "여정 취소 확인" }));
     await waitFor(() => expect(cancelCurrentJourney).toHaveBeenCalledWith(expect.any(AbortSignal)));
+    expect(onJourneyRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the journey and pushes tracked points via a confirmation step", async () => {
+    const onJourneyRefresh = vi.fn();
+    vi.mocked(stopAndSendCurrentJourney).mockResolvedValue({ ok: true });
+    render(<LiveJourney journey={onTrainJourney()} onJourneyRefresh={onJourneyRefresh} />);
+
+    const openConfirmation = screen.getByRole("button", { name: "여기까지 기록하고 종료" });
+    fireEvent.click(openConfirmation);
+    const confirmation = screen.getByRole("region", { name: "지금까지 기록만 보내고 여정을 끝낼까요?" });
+    expect(confirmation).toHaveTextContent("Reitti로 전송하고 여정을 종료해요.");
+
+    fireEvent.click(screen.getByRole("button", { name: "계속 이동할게요" }));
+    expect(screen.queryByRole("region", { name: "지금까지 기록만 보내고 여정을 끝낼까요?" })).not.toBeInTheDocument();
+
+    fireEvent.click(openConfirmation);
+    fireEvent.click(screen.getByRole("button", { name: "여기까지 기록하고 종료 확인" }));
+    await waitFor(() => expect(stopAndSendCurrentJourney).toHaveBeenCalledWith(expect.any(AbortSignal)));
     expect(onJourneyRefresh).toHaveBeenCalledTimes(1);
   });
 

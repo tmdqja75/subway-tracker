@@ -6,6 +6,7 @@ import {
   alightCurrentJourney,
   cancelCurrentJourney,
   markCurrentJourneyMissed,
+  stopAndSendCurrentJourney,
 } from "../lib/api";
 import type { ActiveJourneySnapshot } from "../lib/types";
 import { LiveJourneyMap } from "./maps/live-journey-map";
@@ -20,7 +21,7 @@ type LiveJourneyProps = {
   onJourneyRefresh: () => void;
 };
 
-type JourneyAction = "alight" | "missed" | "cancel";
+type JourneyAction = "alight" | "missed" | "cancel" | "stop";
 
 const ACTION_ERROR = "여정 상태를 바꾸지 못했어요. 잠시 후 다시 시도해 주세요.";
 
@@ -58,6 +59,7 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
   const [pendingAction, setPendingAction] = useState<JourneyAction | null>(null);
   const [actionSucceeded, setActionSucceeded] = useState(false);
   const [showCancelConfirmation, setShowCancelConfirmation] = useState(false);
+  const [showStopConfirmation, setShowStopConfirmation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const actionControllerRef = useRef<AbortController | null>(null);
   const actionInFlightRef = useRef(false);
@@ -80,6 +82,7 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
     setPendingAction(null);
     setActionSucceeded(false);
     setShowCancelConfirmation(false);
+    setShowStopConfirmation(false);
     setError(null);
   }, [journeyKey]);
 
@@ -93,6 +96,7 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
     actionControllerRef.current = controller;
     setPendingAction(action);
     setShowCancelConfirmation(false);
+    setShowStopConfirmation(false);
     setError(null);
 
     try {
@@ -100,6 +104,8 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
         await alightCurrentJourney(controller.signal);
       } else if (action === "missed") {
         await markCurrentJourneyMissed(controller.signal);
+      } else if (action === "stop") {
+        await stopAndSendCurrentJourney(controller.signal);
       } else {
         await cancelCurrentJourney(controller.signal);
       }
@@ -154,6 +160,15 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
           {pendingAction === "missed" ? "열차를 다시 선택하는 중이에요…" : "다른 열차를 탔어요"}
         </Button>
         <Button
+          aria-controls="stop-journey-confirmation"
+          aria-expanded={showStopConfirmation}
+          disabled={locked}
+          onClick={() => setShowStopConfirmation(true)}
+          variant="secondary"
+        >
+          여기까지 기록하고 종료
+        </Button>
+        <Button
           aria-controls="cancel-journey-confirmation"
           aria-expanded={showCancelConfirmation}
           disabled={locked}
@@ -163,6 +178,28 @@ export function LiveJourney({ journey, lastUpdatedAt = null, onJourneyRefresh }:
           여정 취소
         </Button>
       </div>
+
+      {showStopConfirmation ? (
+        <section
+          aria-describedby="stop-journey-description"
+          aria-labelledby="stop-journey-title"
+          className="live-journey__cancel-confirmation"
+          id="stop-journey-confirmation"
+        >
+          <h4 id="stop-journey-title">지금까지 기록만 보내고 여정을 끝낼까요?</h4>
+          <p id="stop-journey-description">
+            지금까지 기록된 위치를 Reitti로 전송하고 여정을 종료해요. 이 작업은 되돌릴 수 없어요.
+          </p>
+          <div>
+            <Button disabled={locked} onClick={() => void performAction("stop")} variant="danger">
+              {pendingAction === "stop" ? "기록을 전송하는 중이에요…" : "여기까지 기록하고 종료 확인"}
+            </Button>
+            <Button disabled={locked} onClick={() => setShowStopConfirmation(false)} variant="secondary">
+              계속 이동할게요
+            </Button>
+          </div>
+        </section>
+      ) : null}
 
       {showCancelConfirmation ? (
         <section

@@ -535,6 +535,25 @@ class JourneyManager:
         j.tracking_mode = None
         self.db.update_journey(j.id, state=j.state, train_no=None, tracking_mode=None)
 
+    async def stop_and_send(self) -> None:
+        """Manual override: end the journey mid-leg and push whatever was
+        tracked up to this moment, abandoning any remaining legs."""
+        j = self._require_active()
+        if j.state != JourneyState.ON_TRAIN:
+            raise ValueError(f"cannot stop in state {j.state}")
+        now = time.time()
+        if j.tracking_mode == "timer":
+            total = max(j.leg.section_time, 60)
+            progress = min((now - (j.leg_started_at or now)) / total, 1.0)
+            idx, lat, lon = self._timer_lerp(j, progress)
+            if idx > j.logged_idx:
+                self._log_segment(j, idx, now)
+        else:
+            lat, lon, _ = self._interpolate(j, now)
+        self._emit_at(j, lat, lon, int(now), estimated=True)
+        self._stop_tracker()
+        self._start_push(j)
+
     async def cancel(self) -> None:
         j = self._require_active()
         self._stop_tracker()
@@ -886,17 +905,21 @@ class JourneyManager:
             )
             await self._complete_leg(j)
             return
-        pos = progress * (len(stations) - 1)
-        idx = min(int(pos), len(stations) - 2)
+        idx, lat, lon = self._timer_lerp(j, progress)
         if idx > j.logged_idx:
             self._log_segment(j, idx, now)
-        f = pos - idx
-        a, b = stations[idx], stations[idx + 1]
-        lat, lon = _lerp(a.lat, b.lat, f), _lerp(a.lon, b.lon, f)
         j.last_status = TrainStatus(
-            train_no=j.train_no or "-", station_name=a.name, station_index=idx,
+            train_no=j.train_no or "-", station_name=stations[idx].name, station_index=idx,
             status="estimated", lat=lat, lon=lon, updated_at=int(now),
         )
+
+    def _timer_lerp(self, j: ActiveJourney, progress: float) -> tuple[int, float, float]:
+        """Station index and interpolated lat/lon for timer-mode progress (0..1)."""
+        stations = j.leg.stations
+        pos = progress * (len(stations) - 1)
+        idx = min(int(pos), len(stations) - 2)
+        a, b = stations[idx], stations[idx + 1]
+        return idx, _lerp(a.lat, b.lat, pos - idx), _lerp(a.lon, b.lon, pos - idx)
 
     def _emit(self, j: ActiveJourney, lat: float, lon: float, estimated: bool) -> None:
         self._emit_at(j, lat, lon, int(time.time()), estimated)
