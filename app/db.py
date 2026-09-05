@@ -53,6 +53,30 @@ CREATE TABLE IF NOT EXISTS app_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journey_leg_notifications (
+    journey_id INTEGER NOT NULL,
+    leg_idx INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (journey_id, leg_idx)
+);
+CREATE TABLE IF NOT EXISTS journey_leg_notification_deliveries (
+    journey_id INTEGER NOT NULL,
+    leg_idx INTEGER NOT NULL,
+    endpoint TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (journey_id, leg_idx, endpoint)
+);
 """
 
 
@@ -105,6 +129,116 @@ class Database:
                 ("route_options_cache_format_version", ROUTE_OPTIONS_CACHE_FORMAT_VERSION),
             )
             self.conn.commit()
+
+    def upsert_push_subscription(self, endpoint: str, p256dh: str, auth: str) -> None:
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO push_subscriptions "
+            "(endpoint, p256dh, auth, created_at, updated_at) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET "
+            "p256dh = excluded.p256dh, auth = excluded.auth, updated_at = excluded.updated_at",
+            (endpoint, p256dh, auth, now, now),
+        )
+        self.conn.commit()
+
+    def delete_push_subscription(self, endpoint: str) -> bool:
+        cur = self.conn.execute(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def has_push_subscriptions(self) -> bool:
+        return self.conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM push_subscriptions)"
+        ).fetchone()[0] == 1
+
+    def list_push_subscriptions(self) -> list[sqlite3.Row]:
+        """Return subscription data for the delivery service; never log it."""
+        return self.conn.execute(
+            "SELECT endpoint, p256dh, auth FROM push_subscriptions ORDER BY endpoint"
+        ).fetchall()
+
+    def claim_journey_leg_notification(
+        self, journey_id: int, leg_idx: int
+    ) -> list[sqlite3.Row]:
+        """Claim a leg once and atomically snapshot its current subscriptions."""
+        now = int(time.time())
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            claim = self.conn.execute(
+                "INSERT OR IGNORE INTO journey_leg_notifications "
+                "(journey_id, leg_idx, state, created_at) VALUES (?, ?, 'claimed', ?)",
+                (journey_id, leg_idx, now),
+            )
+            if claim.rowcount == 0:
+                self.conn.commit()
+                return []
+
+            endpoints = self.conn.execute(
+                "SELECT endpoint FROM push_subscriptions ORDER BY endpoint"
+            ).fetchall()
+            self.conn.executemany(
+                "INSERT INTO journey_leg_notification_deliveries "
+                "(journey_id, leg_idx, endpoint, state, updated_at) "
+                "VALUES (?, ?, ?, 'pending', ?)",
+                [(journey_id, leg_idx, row["endpoint"], now) for row in endpoints],
+            )
+            deliveries = self._get_pending_notification_deliveries(journey_id, leg_idx)
+            self.conn.commit()
+            return deliveries
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _get_pending_notification_deliveries(
+        self, journey_id: int, leg_idx: int
+    ) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT d.journey_id, d.leg_idx, d.endpoint, d.state, d.attempts, "
+            "d.last_error, d.updated_at, s.p256dh, s.auth "
+            "FROM journey_leg_notification_deliveries AS d "
+            "JOIN push_subscriptions AS s ON s.endpoint = d.endpoint "
+            "WHERE d.journey_id = ? AND d.leg_idx = ? "
+            "AND d.state IN ('pending', 'retryable') "
+            "ORDER BY d.endpoint",
+            (journey_id, leg_idx),
+        ).fetchall()
+
+    def get_pending_notification_deliveries(
+        self, journey_id: int, leg_idx: int
+    ) -> list[sqlite3.Row]:
+        """Return pending/retryable delivery inputs for the sender; never log them."""
+        return self._get_pending_notification_deliveries(journey_id, leg_idx)
+
+    def record_notification_delivery_attempt(
+        self, journey_id: int, leg_idx: int, endpoint: str, *, last_error: str | None = None
+    ) -> None:
+        self.conn.execute(
+            "UPDATE journey_leg_notification_deliveries "
+            "SET attempts = attempts + 1, "
+            "last_error = COALESCE(?, last_error), updated_at = ? "
+            "WHERE journey_id = ? AND leg_idx = ? AND endpoint = ?",
+            (last_error, int(time.time()), journey_id, leg_idx, endpoint),
+        )
+        self.conn.commit()
+
+    def record_notification_delivery_result(
+        self,
+        journey_id: int,
+        leg_idx: int,
+        endpoint: str,
+        *,
+        state: str,
+        last_error: str | None = None,
+    ) -> None:
+        self.conn.execute(
+            "UPDATE journey_leg_notification_deliveries "
+            "SET state = ?, last_error = ?, updated_at = ? "
+            "WHERE journey_id = ? AND leg_idx = ? AND endpoint = ?",
+            (state, last_error, int(time.time()), journey_id, leg_idx, endpoint),
+        )
+        self.conn.commit()
 
     def create_journey(self, itinerary: Itinerary, state: str) -> int:
         cur = self.conn.execute(

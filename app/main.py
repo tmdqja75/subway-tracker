@@ -9,6 +9,7 @@ from .api import router
 from .config import get_settings
 from .db import Database
 from .journey import JourneyManager
+from .notifications import NotificationSender
 from .observability import configure_observability
 from .stations import StationRegistry
 
@@ -39,7 +40,9 @@ async def lifespan(app: FastAPI):
     settings = app.state.settings
     app.state.stations = StationRegistry.from_csv(settings.stations_csv)
     db = Database(settings.db_path)
-    app.state.manager = JourneyManager(db, settings)
+    app.state.manager = JourneyManager(
+        db, settings, notification_sender=NotificationSender(db, settings),
+    )
     app.state.manager.resume_from_db()
     logging.getLogger(__name__).info(
         "loaded %s stations", len(app.state.stations.stations)
@@ -47,8 +50,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        app.state.manager._stop_tracker()
-        app.state.manager._stop_push()
+        await app.state.manager.shutdown()
         if app.state.observability:
             app.state.observability.shutdown()
 

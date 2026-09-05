@@ -19,6 +19,7 @@ import time
 from .config import Settings
 from .db import Database
 from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
+from .notifications import NotificationSender
 from .reitti import ReittiError, commit_workbench_patch, push_points
 from .stations import normalize_name
 from .subway_feed import LegTrainStatus, SubwayApiError, locate_train
@@ -40,6 +41,24 @@ TRANSFER_FAILURE_MESSAGES = {
     "rejected": "Reitti 서버가 위치 기록을 받지 않았어요. 서버 상태를 확인한 뒤 다시 시도하세요.",
     "unknown": "Reitti 전송 중 알 수 없는 오류가 발생했어요. 다시 시도하세요.",
 }
+
+
+def is_one_stop_remaining(leg: SubwayLeg, status: TrainStatus | None) -> bool:
+    """Return whether an authoritative leg status has entered its final hop.
+
+    Realtime departures index the station just left, local ``between`` states
+    index the station being approached, and timer estimates index the active
+    segment start. Station names are display data and never participate here.
+    """
+    if leg.mode != "SUBWAY" or len(leg.stations) < 2 or status is None:
+        return False
+    penultimate = len(leg.stations) - 2
+    destination = len(leg.stations) - 1
+    return (
+        (status.status == "departed" and status.station_index == penultimate)
+        or (status.status == "between" and status.station_index == destination)
+        or (status.status == "estimated" and status.station_index == penultimate)
+    )
 
 
 def _lerp(a: float, b: float, f: float) -> float:
@@ -152,18 +171,27 @@ class ActiveJourney:
 
 
 class JourneyManager:
-    def __init__(self, db: Database, settings: Settings):
+    def __init__(
+        self,
+        db: Database,
+        settings: Settings,
+        notification_sender: NotificationSender | None = None,
+    ):
         self.db = db
         self.settings = settings
+        self.notification_sender = notification_sender
         self.active: ActiveJourney | None = None
         self._task: asyncio.Task | None = None
         self._push_task: asyncio.Task | None = None
+        self._notification_tasks: set[asyncio.Task[None]] = set()
+        self._notification_task_keys: set[tuple[int, int]] = set()
 
     # -- lifecycle -----------------------------------------------------------
 
     def resume_from_db(self) -> None:
         row = self.db.get_active_journey()
         if not row:
+            self._resume_pending_notification_deliveries()
             return
         itinerary = self.db.load_itinerary(row)
         j = ActiveJourney(row["id"], itinerary, row["current_leg_idx"])
@@ -192,6 +220,7 @@ class JourneyManager:
         elif j.state == JourneyState.PUSHING:
             self._start_push(j, resume=True)
         log.info("resumed journey %s in state %s", j.id, j.state)
+        self._resume_pending_notification_deliveries()
 
     def _restore_leg_progress(self, j: ActiveJourney) -> None:
         """Recover the logged route and live interpolation anchor from points.
@@ -400,6 +429,7 @@ class JourneyManager:
             transfer_sent_points=None,
             transfer_total_points=None,
         )
+        self._claim_one_stop_notification(j)
         self._start_tracker()
 
     def _validate_onboard_candidate(self, j: ActiveJourney, candidate: OnboardTrain) -> None:
@@ -624,6 +654,87 @@ class JourneyManager:
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
+    def _claim_one_stop_notification(self, j: ActiveJourney) -> None:
+        """Atomically claim an eligible leg before scheduling its delivery."""
+        if (
+            self.notification_sender is None
+            or j.state != JourneyState.ON_TRAIN
+            or not is_one_stop_remaining(j.leg, j.last_status)
+        ):
+            return
+        try:
+            deliveries = self.db.claim_journey_leg_notification(j.id, j.leg_idx)
+        except Exception:
+            log.exception("journey %s: notification claim failed", j.id)
+            return
+        if deliveries:
+            self._start_notification_delivery(j.id, j.leg_idx, j.leg.end_name)
+
+    def _resume_pending_notification_deliveries(self) -> None:
+        """Resume only durable pending/retryable deliveries; never re-evaluate legs."""
+        if self.notification_sender is None:
+            return
+        rows = self.db.conn.execute(
+            "SELECT DISTINCT journey_id, leg_idx FROM journey_leg_notification_deliveries "
+            "WHERE state IN ('pending', 'retryable') ORDER BY journey_id, leg_idx"
+        ).fetchall()
+        for row in rows:
+            journey_id, leg_idx = row["journey_id"], row["leg_idx"]
+            if type(journey_id) is not int or type(leg_idx) is not int:
+                continue
+            journey_row = self.db.get_journey(journey_id)
+            if journey_row is None:
+                continue
+            try:
+                itinerary = self.db.load_itinerary(journey_row)
+                destination_name = itinerary.legs[leg_idx].end_name
+            except (IndexError, ValueError):
+                continue
+            self._start_notification_delivery(journey_id, leg_idx, destination_name)
+
+    def _start_notification_delivery(
+        self, journey_id: int, leg_idx: int, destination_name: str,
+    ) -> None:
+        key = (journey_id, leg_idx)
+        if self.notification_sender is None or key in self._notification_task_keys:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("notification delivery resume deferred: no running event loop")
+            return
+        task = loop.create_task(
+            self.notification_sender.send_claimed_deliveries(
+                journey_id, leg_idx, destination_name,
+            )
+        )
+        self._notification_tasks.add(task)
+        self._notification_task_keys.add(key)
+
+        def finished(completed: asyncio.Task[None]) -> None:
+            self._notification_tasks.discard(completed)
+            self._notification_task_keys.discard(key)
+            if completed.cancelled():
+                return
+            try:
+                completed.result()
+            except Exception:
+                log.exception("journey %s leg %s: notification task failed", journey_id, leg_idx)
+
+        task.add_done_callback(finished)
+
+    async def shutdown(self) -> None:
+        """Stop background work and await cancellation of notification tasks."""
+        self._stop_tracker()
+        self._stop_push()
+        current = asyncio.current_task()
+        tasks = [task for task in self._notification_tasks if task is not current]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _track_loop(self) -> None:
         try:
             while True:
@@ -730,6 +841,7 @@ class JourneyManager:
             lon=lon,
             updated_at=int(now),
         )
+        self._claim_one_stop_notification(j)
 
     async def _realtime_update(self, j: ActiveJourney) -> bool:
         """Poll the subway feed for the boarded train; write the travelled
@@ -783,6 +895,7 @@ class JourneyManager:
             train_no=j.train_no, station_name=result.station_name,
             station_index=idx, status=status, lat=lat, lon=lon, updated_at=int(now),
         )
+        self._claim_one_stop_notification(j)
 
         arrived_at_end = idx >= len(j.leg.stations) - 1 and result.status in ("approaching", "arrived")
         if arrived_at_end:
@@ -912,6 +1025,7 @@ class JourneyManager:
             train_no=j.train_no or "-", station_name=stations[idx].name, station_index=idx,
             status="estimated", lat=lat, lon=lon, updated_at=int(now),
         )
+        self._claim_one_stop_notification(j)
 
     def _timer_lerp(self, j: ActiveJourney, progress: float) -> tuple[int, float, float]:
         """Station index and interpolated lat/lon for timer-mode progress (0..1)."""

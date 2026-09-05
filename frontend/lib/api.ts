@@ -10,6 +10,9 @@ import type {
   StartJourneyRequest,
   Station,
   TrackPoint,
+  WebPushConfigResponse,
+  WebPushSubscriptionRequest,
+  WebPushSubscriptionStatusResponse,
 } from "./types";
 
 function networkErrorMessage(): string {
@@ -28,7 +31,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -111,6 +114,38 @@ export function searchRoutes(
 
 export function getRouteHistory(signal?: AbortSignal): Promise<RouteHistoryResponse> {
   return requestJson<RouteHistoryResponse>("/api/routes/history", { method: "GET", signal });
+}
+
+export function getNotificationConfig(signal?: AbortSignal): Promise<WebPushConfigResponse> {
+  return requestJson<WebPushConfigResponse>("/api/notifications/config", { method: "GET", signal });
+}
+
+export function getNotificationSubscriptionStatus(
+  signal?: AbortSignal,
+): Promise<WebPushSubscriptionStatusResponse> {
+  return requestJson<WebPushSubscriptionStatusResponse>("/api/notifications/subscription", {
+    method: "GET",
+    signal,
+  });
+}
+
+export function registerNotificationSubscription(
+  subscription: WebPushSubscriptionRequest,
+  signal?: AbortSignal,
+): Promise<WebPushSubscriptionStatusResponse> {
+  return requestJson<WebPushSubscriptionStatusResponse>("/api/notifications/subscription", {
+    method: "POST",
+    body: subscription,
+    signal,
+  });
+}
+
+export function unsubscribeNotification(endpoint: string, signal?: AbortSignal): Promise<OkResponse> {
+  return requestJson<OkResponse>("/api/notifications/subscription", {
+    method: "DELETE",
+    body: { endpoint },
+    signal,
+  });
 }
 
 export function startJourney(

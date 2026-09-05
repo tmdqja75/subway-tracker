@@ -5,6 +5,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { useCurrentJourney } from "../hooks/use-current-journey";
 import { getLineColor } from "../lib/line-colors";
 import type { CurrentJourneyResponse, Itinerary } from "../lib/types";
+import { NotificationSettings } from "./notification-settings";
 import { JourneySearch } from "./journey-search";
 import { LiveJourney } from "./live-journey";
 import { JourneyStepper, type JourneyStep } from "./journey-stepper";
@@ -94,10 +95,13 @@ export function JourneyApp() {
           <p className="eyebrow">SUBWAY TRACKER</p>
           <h1>도시를 따라, 더 편안하게.</h1>
         </div>
-        <span aria-label="서비스 준비됨" className="availability-indicator">
-          <span aria-hidden="true" />
-          준비됨
-        </span>
+        <div className="app-header__controls">
+          <span aria-label="서비스 준비됨" className="availability-indicator">
+            <span aria-hidden="true" />
+            준비됨
+          </span>
+          <NotificationSettings />
+        </div>
       </header>
 
       <JourneyStepper activeStep={activeStep} />

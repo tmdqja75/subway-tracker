@@ -127,6 +127,36 @@ To replace the icon everywhere:
    iPhone, remove the old Home Screen shortcut and use Safari's **Add to Home
    Screen** again after the deployment is reachable over HTTPS.
 
+### iPhone destination notifications
+
+The persistent **알림 설정** control enables alerts for future journeys and is
+the only place that requests permission. Web Push needs HTTPS, a Safari Home
+Screen-installed app, and iOS/iPadOS 16.4+. Tapping an alert focuses or opens
+the active journey app; this version does not set an app-icon badge.
+
+Set all three VAPID values in `.env` to enable delivery. Generate and rotate a
+new pair together with `uv run vapid --gen --json`; never commit the private
+key or log Push subscription endpoints/encryption keys. Permit outbound HTTPS
+to Apple Web Push hosts such as `*.push.apple.com`.
+
+```dotenv
+WEB_PUSH_VAPID_PUBLIC_KEY=
+WEB_PUSH_VAPID_PRIVATE_KEY=
+WEB_PUSH_VAPID_SUBJECT=mailto:you@example.com
+```
+
+The tracker durably claims one non-blocking delivery attempt per eligible
+`SUBWAY` leg (including transfers) when its destination becomes the next stop.
+Bus, train, and ferry legs are excluded. Realtime alerts follow departure from
+the penultimate station; timer/fallback tracking uses the equivalent boundary.
+Push acceptance is an attempt, not proof iOS displayed an alert.
+
+For manual HTTPS iPhone acceptance: install/open the app from Home Screen, tap
+**알림 설정** and grant permission, test realtime/timer/transfer legs for exactly
+one `다음 역은 [station-name]이에요. 하차를 준비하세요.` alert each, confirm
+non-subway legs do not alert, then tap an alert to focus the journey. Record
+only pass/fail and non-secret diagnostics.
+
 To deploy an update, pull the intended revision and rebuild the service. The
 `./data` bind mount preserves the station CSV and SQLite database.
 

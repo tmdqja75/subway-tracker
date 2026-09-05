@@ -9,7 +9,7 @@ import pytest
 from app import journey as journey_mod
 from app.config import Settings
 from app.db import Database
-from app.journey import ActiveJourney, JourneyManager
+from app.journey import ActiveJourney, JourneyManager, is_one_stop_remaining
 from app.models import Itinerary, JourneyState, LegStation, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
 from app.subway_feed import LegTrainStatus
@@ -30,6 +30,19 @@ def make_itinerary(shape: list | None = None) -> Itinerary:
         total_time=240, transfer_count=0, total_walk_time=0, fare=1400,
         legs=[leg], summary=["🚇 수도권3호선: 양재 → 도곡"],
     )
+
+
+class FakeNotificationSender:
+    def __init__(self, gate: asyncio.Event | None = None):
+        self.calls: list[tuple[int, int, str]] = []
+        self.gate = gate
+
+    async def send_claimed_deliveries(
+        self, journey_id: int, leg_idx: int, destination_name: str,
+    ) -> None:
+        self.calls.append((journey_id, leg_idx, destination_name))
+        if self.gate is not None:
+            await self.gate.wait()
 
 
 def test_history_estimated_column_migrates_existing_journeys(tmp_path: Path):
@@ -1152,3 +1165,201 @@ async def test_stop_and_send_requires_an_active_ride(manager):
 
     with pytest.raises(ValueError):
         await manager.stop_and_send()
+
+
+def test_one_stop_remaining_uses_only_authoritative_mode_status_and_indexes():
+    leg = make_itinerary().legs[0]
+    penultimate = len(leg.stations) - 2
+    destination = len(leg.stations) - 1
+
+    def status(kind: str, station_index: int | None) -> TrainStatus:
+        return TrainStatus(
+            train_no="3001", station_name="ignored", station_index=station_index,
+            status=kind, lat=0, lon=0, updated_at=1,
+        )
+
+    assert is_one_stop_remaining(leg, status("departed", penultimate))
+    assert is_one_stop_remaining(leg, status("between", destination))
+    assert is_one_stop_remaining(leg, status("estimated", penultimate))
+    assert not is_one_stop_remaining(leg, status("departed", 0))
+    assert not is_one_stop_remaining(leg, status("between", penultimate))
+    assert not is_one_stop_remaining(leg, status("arrived", penultimate))
+    assert not is_one_stop_remaining(leg, status("departed", None))
+    assert not is_one_stop_remaining(leg, None)
+
+    leg.mode = "BUS"
+    assert not is_one_stop_remaining(leg, status("departed", penultimate))
+    leg.mode = "SUBWAY"
+    leg.stations = leg.stations[:1]
+    assert not is_one_stop_remaining(leg, status("departed", 0))
+
+
+async def test_realtime_claims_before_nonblocking_dispatch_and_deduplicates(manager, monkeypatch):
+    gate = asyncio.Event()
+    sender = FakeNotificationSender(gate)
+    tracked = JourneyManager(manager.db, manager.settings, notification_sender=sender)
+    tracked.db.upsert_push_subscription("https://push.example/one", "key", "auth")
+    monkeypatch.setattr(tracked, "_start_tracker", lambda: None)
+
+    async def at_penultimate(base_url, leg, train_no):
+        return LegTrainStatus(leg_index=1, status="departed", station_name="매봉")
+
+    monkeypatch.setattr(journey_mod, "locate_train", at_penultimate)
+    journey = await tracked.start_journey(make_itinerary())
+    await tracked.board("3001")
+
+    await tracked._realtime_update(journey)
+    assert tracked.db.conn.execute(
+        "SELECT COUNT(*) FROM journey_leg_notifications WHERE journey_id = ? AND leg_idx = 0",
+        (journey.id,),
+    ).fetchone()[0] == 1
+    assert len(tracked._notification_tasks) == 1
+
+    # The sender waits forever until released, proving the tracker did not await
+    # Web Push work before returning from the realtime update.
+    await asyncio.sleep(0)
+    assert sender.calls == [(journey.id, 0, "도곡")]
+    await tracked._realtime_update(journey)
+    assert len(tracked._notification_tasks) == 1
+    assert sender.calls == [(journey.id, 0, "도곡")]
+
+    task = next(iter(tracked._notification_tasks))
+    gate.set()
+    await task
+    assert not tracked._notification_tasks
+
+
+async def test_local_timer_and_onboard_paths_claim_their_authoritative_status(manager, monkeypatch):
+    sender = FakeNotificationSender()
+    tracked = JourneyManager(manager.db, manager.settings, notification_sender=sender)
+    tracked.db.upsert_push_subscription("https://push.example/one", "key", "auth")
+    monkeypatch.setattr(tracked, "_start_tracker", lambda: None)
+
+    local = await tracked.start_journey(make_itinerary())
+    await tracked.board("3001")
+    local.anchor_idx = 1
+    local.anchor_phase = "segment"
+    local.anchor_time = 0
+    local.last_status = TrainStatus(
+        train_no="3001", station_name="매봉", station_index=1, status="departed",
+        lat=local.leg.stations[1].lat, lon=local.leg.stations[1].lon, updated_at=0,
+    )
+    tracked._local_realtime_update(local, now=1)
+
+    timer = await tracked.start_journey(make_itinerary())
+    await tracked.board(None)
+    assert timer.leg_started_at is not None
+    timer.leg_started_at -= 180
+    await tracked._timer_update(timer)
+
+    onboard = await tracked.start_journey(make_itinerary())
+    await tracked.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="3001", line_name="3호선", terminus="도곡",
+            direction_label="도곡 방면", station_name="매봉", station_index=1,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert sender.calls == [
+        (local.id, 0, "도곡"),
+        (timer.id, 0, "도곡"),
+        (onboard.id, 0, "도곡"),
+    ]
+    await tracked.shutdown()
+
+
+async def test_two_stop_and_transfer_legs_claim_separately_but_non_subway_never_claims(manager, monkeypatch):
+    sender = FakeNotificationSender()
+    tracked = JourneyManager(manager.db, manager.settings, notification_sender=sender)
+    tracked.db.upsert_push_subscription("https://push.example/one", "key", "auth")
+    monkeypatch.setattr(tracked, "_start_tracker", lambda: None)
+    two_stop = make_itinerary()
+    two_stop.legs[0].stations = two_stop.legs[0].stations[:2]
+    two_stop.legs[0].end_name = "매봉"
+    journey = await tracked.start_journey(two_stop)
+    await tracked.board("3001")
+
+    async def at_origin_departure(base_url, leg, train_no):
+        return LegTrainStatus(leg_index=0, status="departed", station_name="양재")
+
+    monkeypatch.setattr(journey_mod, "locate_train", at_origin_departure)
+    await tracked._realtime_update(journey)
+
+    first, second = make_itinerary().legs[0], make_itinerary().legs[0].model_copy(deep=True)
+    second.start_name, second.end_name = "도곡", "서울역"
+    second.stations = [
+        LegStation(index=0, name="도곡", lat=37.4909, lon=127.0553),
+        LegStation(index=1, name="서울역", lat=37.5535, lon=126.9728),
+    ]
+    transfer = await tracked.start_journey(Itinerary(
+        total_time=480, transfer_count=1, total_walk_time=0, fare=1400,
+        legs=[first, second], summary=["first", "second"],
+    ))
+    await tracked.board(None)
+    assert transfer.leg_started_at is not None
+    transfer.leg_started_at -= 180
+    await tracked._timer_update(transfer)
+    await tracked.alight()
+    await tracked.board(None)
+    assert transfer.leg_started_at is not None
+    transfer.leg_started_at -= 180
+    await tracked._timer_update(transfer)
+
+    excluded = await tracked.start_journey(make_itinerary())
+    excluded.leg.mode = "TRAIN"
+    await tracked.board(None)
+    assert excluded.leg_started_at is not None
+    excluded.leg_started_at -= 180
+    await tracked._timer_update(excluded)
+    await asyncio.sleep(0)
+
+    claimed = tracked.db.conn.execute(
+        "SELECT journey_id, leg_idx FROM journey_leg_notifications ORDER BY journey_id, leg_idx"
+    ).fetchall()
+    assert [tuple(row) for row in claimed] == [
+        (journey.id, 0), (transfer.id, 0), (transfer.id, 1),
+    ]
+    assert all(call[0] != excluded.id for call in sender.calls)
+    await tracked.shutdown()
+
+
+async def test_restart_resumes_only_existing_pending_claim_and_terminal_state_cannot_claim(manager, monkeypatch):
+    gate = asyncio.Event()
+    first_sender = FakeNotificationSender(gate)
+    tracked = JourneyManager(manager.db, manager.settings, notification_sender=first_sender)
+    tracked.db.upsert_push_subscription("https://push.example/one", "key", "auth")
+    monkeypatch.setattr(tracked, "_start_tracker", lambda: None)
+    journey = await tracked.start_journey(make_itinerary())
+    await tracked.board("3001")
+    journey.last_status = TrainStatus(
+        train_no="3001", station_name="매봉", station_index=1, status="departed",
+        lat=journey.leg.stations[1].lat, lon=journey.leg.stations[1].lon, updated_at=1,
+    )
+    tracked._claim_one_stop_notification(journey)
+    await asyncio.sleep(0)
+    await tracked.shutdown()
+
+    resumed_sender = FakeNotificationSender(gate)
+    resumed = JourneyManager(manager.db, manager.settings, notification_sender=resumed_sender)
+    monkeypatch.setattr(resumed, "_start_tracker", lambda: None)
+    resumed.resume_from_db()
+    await asyncio.sleep(0)
+    assert resumed_sender.calls == [(journey.id, 0, "도곡")]
+    assert resumed.db.conn.execute(
+        "SELECT COUNT(*) FROM journey_leg_notifications WHERE journey_id = ?",
+        (journey.id,),
+    ).fetchone()[0] == 1
+
+    assert resumed.active is not None
+    for terminal_state in (JourneyState.CANCELLED, JourneyState.PUSHING, JourneyState.COMPLETED):
+        resumed.active.state = terminal_state
+        resumed._claim_one_stop_notification(resumed.active)
+    assert resumed.db.conn.execute(
+        "SELECT COUNT(*) FROM journey_leg_notifications WHERE journey_id = ?",
+        (journey.id,),
+    ).fetchone()[0] == 1
+    gate.set()
+    await resumed.shutdown()

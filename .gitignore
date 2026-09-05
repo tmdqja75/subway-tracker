@@ -4,7 +4,6 @@ __pycache__/
 .venv/
 data/tracker.db
 .pytest_cache/
-uv.lock
 .DS_Store
 .serena/
 

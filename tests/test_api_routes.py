@@ -52,6 +52,118 @@ def make_app(db: Database) -> FastAPI:
     return app
 
 
+def test_notification_config_reports_only_public_state_when_server_is_disabled(tmp_path):
+    app = make_app(Database(tmp_path / "tracker.db"))
+    app.state.settings = SimpleNamespace(
+        web_push_enabled=False,
+        web_push_vapid_public_key="public-key-that-must-not-be-returned-while-disabled",
+        web_push_vapid_private_key="private-key",
+        web_push_vapid_subject="mailto:notifications@example.com",
+    )
+
+    response = TestClient(app).get("/api/notifications/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False, "public_key": None}
+    assert "private-key" not in response.text
+
+
+def test_notification_config_returns_only_the_configured_public_key(tmp_path):
+    app = make_app(Database(tmp_path / "tracker.db"))
+    app.state.settings = SimpleNamespace(
+        web_push_enabled=True,
+        web_push_vapid_public_key="public-key",
+        web_push_vapid_private_key="private-key",
+        web_push_vapid_subject="mailto:notifications@example.com",
+    )
+
+    response = TestClient(app).get("/api/notifications/config")
+
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "public_key": "public-key"}
+    assert "private-key" not in response.text
+
+
+def test_notification_subscription_validates_upserts_reports_opaque_status_and_deletes(tmp_path):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    app.state.settings = SimpleNamespace(
+        web_push_enabled=True,
+        web_push_vapid_public_key="public-key",
+        web_push_vapid_private_key="private-key",
+        web_push_vapid_subject="mailto:notifications@example.com",
+    )
+    client = TestClient(app)
+    endpoint = "https://push.example/subscription"
+
+    missing_keys = client.post("/api/notifications/subscription", json={"endpoint": endpoint})
+    missing_auth = client.post(
+        "/api/notifications/subscription",
+        json={"endpoint": endpoint, "keys": {"p256dh": "first-p256dh"}},
+    )
+    initial_status = client.get("/api/notifications/subscription")
+    registered = client.post(
+        "/api/notifications/subscription",
+        json={"endpoint": endpoint, "keys": {"p256dh": "first-p256dh", "auth": "first-auth"}},
+    )
+    refreshed = client.post(
+        "/api/notifications/subscription",
+        json={"endpoint": endpoint, "keys": {"p256dh": "next-p256dh", "auth": "next-auth"}},
+    )
+    subscribed_status = client.get("/api/notifications/subscription")
+    stored = [dict(row) for row in db.list_push_subscriptions()]
+    invalid_delete = client.request("DELETE", "/api/notifications/subscription", json={})
+    deleted = client.request(
+        "DELETE", "/api/notifications/subscription", json={"endpoint": endpoint}
+    )
+    final_status = client.get("/api/notifications/subscription")
+
+    assert missing_keys.status_code == 422
+    assert missing_auth.status_code == 422
+    assert initial_status.json() == {"enabled": False}
+    assert registered.status_code == 200
+    assert registered.json() == {"enabled": True}
+    assert refreshed.status_code == 200
+    assert refreshed.json() == {"enabled": True}
+    assert subscribed_status.json() == {"enabled": True}
+    assert invalid_delete.status_code == 422
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True}
+    assert final_status.json() == {"enabled": False}
+    assert stored == [
+        {"endpoint": endpoint, "p256dh": "next-p256dh", "auth": "next-auth"}
+    ]
+    assert db.list_push_subscriptions() == []
+    for response in (initial_status, registered, refreshed, subscribed_status, final_status):
+        assert set(response.json()) == {"enabled"}
+        assert endpoint not in response.text
+        assert "p256dh" not in response.text
+        assert "auth" not in response.text
+
+
+def test_notification_subscription_registration_returns_409_when_server_is_disabled(tmp_path):
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    app.state.settings = SimpleNamespace(
+        web_push_enabled=False,
+        web_push_vapid_public_key="",
+        web_push_vapid_private_key="private-key",
+        web_push_vapid_subject="mailto:notifications@example.com",
+    )
+
+    response = TestClient(app).post(
+        "/api/notifications/subscription",
+        json={
+            "endpoint": "https://push.example/subscription",
+            "keys": {"p256dh": "p256dh", "auth": "auth"},
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "web push is disabled"}
+    assert db.list_push_subscriptions() == []
+
+
 def test_routes_reuses_cache_for_same_station_names_and_lines(tmp_path, monkeypatch):
     db = Database(tmp_path / "tracker.db")
     app = make_app(db)
