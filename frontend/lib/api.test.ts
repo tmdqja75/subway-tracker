@@ -8,13 +8,17 @@ import {
   getCurrentArrivals,
   getCurrentJourney,
   getCurrentJourneyPoints,
+  getNotificationConfig,
+  getNotificationSubscriptionStatus,
   getRouteHistory,
   markCurrentJourneyMissed,
+  registerNotificationSubscription,
   retryCurrentJourneyPush,
   searchRoutes,
   searchStations,
   startJourney,
   stopAndSendCurrentJourney,
+  unsubscribeNotification,
 } from "./api";
 import type {
   ApiErrorResponse,
@@ -23,6 +27,7 @@ import type {
   RouteHistoryResponse,
   RouteSearchRequest,
   StartJourneyRequest,
+  WebPushSubscriptionRequest,
 } from "./types";
 import { itinerary, station } from "../test/fixtures";
 
@@ -187,6 +192,60 @@ describe("rider API client", () => {
         signal: controller.signal,
       },
     );
+  });
+
+  it("uses the complete no-store and AbortSignal contract for Web Push endpoints", async () => {
+    const controller = new AbortController();
+    const subscription = {
+      endpoint: "https://push.example/subscription",
+      keys: { p256dh: "public-key", auth: "auth-secret" },
+    } satisfies WebPushSubscriptionRequest;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ enabled: true, public_key: "BElongVapidKey" }))
+      .mockResolvedValueOnce(jsonResponse({ enabled: false }))
+      .mockResolvedValueOnce(jsonResponse({ enabled: true }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getNotificationConfig(controller.signal)).resolves.toEqual({
+      enabled: true,
+      public_key: "BElongVapidKey",
+    });
+    await expect(getNotificationSubscriptionStatus(controller.signal)).resolves.toEqual({ enabled: false });
+    await expect(registerNotificationSubscription(subscription, controller.signal)).resolves.toEqual({ enabled: true });
+    await expect(unsubscribeNotification(subscription.endpoint, controller.signal)).resolves.toEqual({ ok: true });
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "/api/notifications/config",
+        { method: "GET", headers: { "Content-Type": "application/json" }, cache: "no-store", signal: controller.signal },
+      ],
+      [
+        "/api/notifications/subscription",
+        { method: "GET", headers: { "Content-Type": "application/json" }, cache: "no-store", signal: controller.signal },
+      ],
+      [
+        "/api/notifications/subscription",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+          body: JSON.stringify(subscription),
+        },
+      ],
+      [
+        "/api/notifications/subscription",
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          signal: controller.signal,
+          body: JSON.stringify({ endpoint: subscription.endpoint }),
+        },
+      ],
+    ]);
   });
 
   it("calls every rider endpoint with its complete RequestInit contract", async () => {

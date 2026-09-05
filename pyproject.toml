@@ -12,6 +12,7 @@ dependencies = [
     "opentelemetry-sdk>=1.37",
     "opentelemetry-exporter-otlp-proto-http>=1.37",
     "opentelemetry-instrumentation-fastapi>=0.58b0",
+    "pywebpush>=2.5.0",
 ]
 
 [dependency-groups]

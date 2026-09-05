@@ -106,6 +106,29 @@ Browser and install branding use Next's App Router metadata-file conventions:
 `frontend/app/manifest.ts` declares standalone app metadata. Keep the two PNGs
 square and update the manifest dimensions if either icon size changes.
 
+## Web Push destination notifications
+
+The persistent **알림 설정** control feature-detects browser APIs and registers
+root `/service-worker.js`; it must request permission only after a direct user
+tap. The browser may receive the VAPID public key, but never the private key or
+subscription endpoint/encryption keys. The Service Worker must focus an
+existing same-origin client or open `/` after a notification click.
+
+FastAPI owns eligibility and atomically claims `(journey_id, leg_idx)` before
+non-blocking delivery, snapshotting subscriptions and preserving retry state
+across restart. Alert only `mode == "SUBWAY"` legs with at least two stations:
+realtime `departed` indexes the station just left, local `between` indexes the
+next station, and timer `estimated` indexes the active segment start. Include
+transfer subway legs; exclude bus/train/ferry. Evaluate the immediate observed
+status in retroactive onboarding. Delete permanent 404/410 subscriptions and
+bound transient retries. Push acceptance is delivery-attempt evidence only.
+
+Configure `WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`, and
+`WEB_PUSH_VAPID_SUBJECT` together. Production validation requires HTTPS, a
+Home Screen-installed iOS/iPadOS 16.4+ app, and Apple Push egress. Manually
+verify realtime/timer/transfer exact-once behavior and notification-tap focus;
+record only non-secret diagnostics.
+
 Leaflet is client-only. Keep browser globals and Leaflet imports inside the
 component effect boundary, validate map geometry, and clean maps/layers on
 identity changes and unmount. Do not let volatile polling counters recreate

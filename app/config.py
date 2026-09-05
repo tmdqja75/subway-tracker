@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     reitti_url: str = ""
     reitti_token: str = ""
     reitti_device_id: str = "3"
+    web_push_vapid_public_key: str = ""
+    web_push_vapid_private_key: str = ""
+    web_push_vapid_subject: str = ""
 
     poll_interval_seconds: int = 5
     log_level: str = "INFO"
@@ -23,6 +26,14 @@ class Settings(BaseSettings):
     otel_metric_export_interval_millis: int = 10_000
     stations_csv: Path = BASE_DIR / "data" / "stations.csv"
     db_path: Path = BASE_DIR / "data" / "tracker.db"
+
+    @property
+    def web_push_enabled(self) -> bool:
+        return bool(
+            self.web_push_vapid_public_key
+            and self.web_push_vapid_private_key
+            and self.web_push_vapid_subject
+        )
 
 
 @lru_cache

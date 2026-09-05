@@ -67,6 +67,20 @@ afterEach(() => {
 });
 
 describe("JourneyApp", () => {
+  it("keeps the persistent notification settings control in the header", () => {
+    vi.mocked(useCurrentJourney).mockReturnValue({
+      snapshot: idleJourneySnapshot,
+      loading: false,
+      error: null,
+      lastUpdatedAt: null,
+      refresh: vi.fn(),
+    });
+
+    render(<JourneyApp />);
+
+    expect(screen.getByRole("region", { name: "도착 알림 설정" })).toBeVisible();
+  });
+
   it("uses the authoritative idle snapshot to show search and routes only on-train journeys to live tracking", () => {
     const refresh = vi.fn();
     vi.mocked(useCurrentJourney).mockReturnValue({

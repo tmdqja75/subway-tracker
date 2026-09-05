@@ -6,7 +6,16 @@ import time
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from .models import Itinerary, RouteHistoryItem, RouteHistoryResponse
+from .models import (
+    Itinerary,
+    OkResponse,
+    RouteHistoryItem,
+    RouteHistoryResponse,
+    WebPushConfigResponse,
+    WebPushSubscriptionDeleteRequest,
+    WebPushSubscriptionRequest,
+    WebPushSubscriptionStatusResponse,
+)
 from .reitti import ReittiError
 from .stations import normalize_name
 from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
@@ -136,6 +145,40 @@ async def route_history(request: Request):
         return items
 
     return RouteHistoryResponse(most_used=resolve(most_used), recent=resolve(recent))
+
+
+@router.get("/notifications/config", response_model=WebPushConfigResponse)
+async def notification_config(request: Request):
+    settings = request.app.state.settings
+    if not settings.web_push_enabled:
+        return WebPushConfigResponse(enabled=False, public_key=None)
+    return WebPushConfigResponse(enabled=True, public_key=settings.web_push_vapid_public_key)
+
+
+@router.get("/notifications/subscription", response_model=WebPushSubscriptionStatusResponse)
+async def notification_subscription_status(request: Request):
+    settings = request.app.state.settings
+    return WebPushSubscriptionStatusResponse(
+        enabled=settings.web_push_enabled and request.app.state.manager.db.has_push_subscriptions()
+    )
+
+
+@router.post("/notifications/subscription", response_model=WebPushSubscriptionStatusResponse)
+async def register_notification_subscription(request: Request, body: WebPushSubscriptionRequest):
+    if not request.app.state.settings.web_push_enabled:
+        raise HTTPException(409, "web push is disabled")
+    request.app.state.manager.db.upsert_push_subscription(
+        body.endpoint, body.keys.p256dh, body.keys.auth
+    )
+    return WebPushSubscriptionStatusResponse(enabled=True)
+
+
+@router.delete("/notifications/subscription", response_model=OkResponse)
+async def delete_notification_subscription(
+    request: Request, body: WebPushSubscriptionDeleteRequest
+):
+    request.app.state.manager.db.delete_push_subscription(body.endpoint)
+    return OkResponse(ok=True)
 
 
 @router.post("/journeys")

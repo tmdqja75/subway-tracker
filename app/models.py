@@ -30,6 +30,33 @@ class RouteHistoryResponse(BaseModel):
     recent: list[RouteHistoryItem]
 
 
+class WebPushSubscriptionKeysRequest(BaseModel):
+    p256dh: str = Field(min_length=1)
+    auth: str = Field(min_length=1)
+
+
+class WebPushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=1)
+    keys: WebPushSubscriptionKeysRequest
+
+
+class WebPushSubscriptionDeleteRequest(BaseModel):
+    endpoint: str = Field(min_length=1)
+
+
+class WebPushConfigResponse(BaseModel):
+    enabled: bool
+    public_key: str | None
+
+
+class WebPushSubscriptionStatusResponse(BaseModel):
+    enabled: bool
+
+
+class OkResponse(BaseModel):
+    ok: bool
+
+
 class LegStation(BaseModel):
     """A station on a subway leg's pass-stop list (coords from Tmap)."""
 

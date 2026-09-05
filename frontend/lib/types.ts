@@ -206,6 +206,25 @@ export interface CurrentArrivalsResponse {
   context_before: string[];
 }
 
+export interface WebPushSubscriptionKeysRequest {
+  p256dh: string;
+  auth: string;
+}
+
+export interface WebPushSubscriptionRequest {
+  endpoint: string;
+  keys: WebPushSubscriptionKeysRequest;
+}
+
+export interface WebPushConfigResponse {
+  enabled: boolean;
+  public_key: string | null;
+}
+
+export interface WebPushSubscriptionStatusResponse {
+  enabled: boolean;
+}
+
 export interface OkResponse {
   ok: true;
 }
