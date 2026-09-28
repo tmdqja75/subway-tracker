@@ -5,7 +5,7 @@ import respx
 from httpx import Response
 
 from app.models import Itinerary, LegStation, SubwayLeg
-from app.tmap import TRANSIT_URL, reverse_itinerary, search_routes, search_routes_with_raw_response
+from app.tmap import TRANSIT_URL, TmapNoRouteError, join_itineraries, reverse_itinerary, search_routes, search_routes_with_raw_response
 
 
 @pytest.mark.asyncio
@@ -334,3 +334,82 @@ def test_reverse_itinerary_single_leg_has_no_transfer_walk():
     assert reversed_itinerary.legs[0].start_name == "사당"
     assert reversed_itinerary.legs[0].end_name == "강남"
     assert reversed_itinerary.legs[0].transfer_walk_time == 0
+
+
+@pytest.mark.asyncio
+async def test_search_routes_uses_tmap_default_result_count():
+    data = {"metaData": {"plan": {"itineraries": []}}}
+
+    with respx.mock:
+        route = respx.post(TRANSIT_URL).mock(return_value=Response(200, json=data))
+        await search_routes("key", 127.0, 37.0, 126.0, 37.5)
+
+    assert "count" not in json.loads(route.calls[0].request.content)
+
+
+def _leg(route, names, section_time=300, mode="SUBWAY"):
+    return SubwayLeg(
+        route=route,
+        line_key=None,
+        mode=mode,
+        section_time=section_time,
+        start_name=names[0],
+        end_name=names[-1],
+        stations=[
+            LegStation(index=i, name=n, lat=37.5 + i / 100, lon=127.0)
+            for i, n in enumerate(names)
+        ],
+        shape=[[37.5 + i / 100, 127.0] for i in range(len(names))],
+    )
+
+
+def _trip(*legs, walk=60):
+    return Itinerary(
+        total_time=sum(leg.section_time for leg in legs) + walk,
+        transfer_count=len(legs) - 1,
+        total_walk_time=walk,
+        fare=1400,
+        legs=list(legs),
+        summary=["stale"],
+    )
+
+
+def test_join_itineraries_transfers_at_the_via():
+    a = _trip(_leg("수도권7호선", ["논현", "건대입구"], 1500))
+    b = _trip(_leg("수도권2호선", ["건대입구", "잠실"], 480))
+
+    joined = join_itineraries(a, b)
+
+    assert [leg.route for leg in joined.legs] == ["수도권7호선", "수도권2호선"]
+    assert joined.total_time == a.total_time + b.total_time
+    assert joined.total_walk_time == 120
+    assert joined.transfer_count == 1
+    assert joined.fare is None
+    assert joined.is_reversed is False
+    assert joined.legs[0].transfer_walk_time == 0
+    assert joined.summary == [
+        "🚇 수도권7호선: 논현 → 건대입구",
+        "🚇 수도권2호선: 건대입구 → 잠실",
+    ]
+
+
+def test_join_itineraries_never_merges_same_route_legs_at_the_via():
+    # 성수 is a 2호선 branch junction: 용답→성수 (성수지선) and 성수→뚝섬 share
+    # the route name, but no single train runs through, so the rider re-boards.
+    a = _trip(_leg("수도권2호선", ["용답", "성수"]))
+    b = _trip(_leg("수도권2호선", ["성수", "뚝섬"]))
+
+    joined = join_itineraries(a, b)
+
+    assert [(leg.start_name, leg.end_name) for leg in joined.legs] == [("용답", "성수"), ("성수", "뚝섬")]
+    assert joined.transfer_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_routes_reports_a_plan_less_answer_as_no_route():
+    data = {"result": {"status": 11, "message": "출발지/도착지 간 거리가 가까워서 탐색된 결과 없음"}}
+
+    with respx.mock:
+        respx.post(TRANSIT_URL).mock(return_value=Response(200, json=data))
+        with pytest.raises(TmapNoRouteError):
+            await search_routes("key", 127.0, 37.0, 126.0, 37.5)

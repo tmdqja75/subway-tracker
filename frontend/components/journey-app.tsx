@@ -92,8 +92,7 @@ export function JourneyApp() {
     <main aria-label="Subway Tracker 이동 화면" className="app-shell">
       <header className="app-header">
         <div>
-          <p className="eyebrow">SUBWAY TRACKER</p>
-          <h1>도시를 따라, 더 편안하게.</h1>
+          <h1>Subway Tracker</h1>
         </div>
         <div className="app-header__controls">
           <span aria-label="서비스 준비됨" className="availability-indicator">

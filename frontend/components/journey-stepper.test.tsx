@@ -32,7 +32,9 @@ describe("rider visual shell primitives", () => {
     expect(main).toHaveClass("app-shell");
     expect(main).not.toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector(".legacy-smoke-title")).toBeNull();
-    expect(screen.getByRole("heading", { level: 1, name: "도시를 따라, 더 편안하게." })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "Subway Tracker" })).toBeVisible();
+    expect(screen.queryByText("도시를 따라, 더 편안하게.")).toBeNull();
+    expect(screen.queryByText("SUBWAY TRACKER")).toBeNull();
   });
 
   it("renders journey progress as a labelled list without a navigation landmark", () => {

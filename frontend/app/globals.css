@@ -459,6 +459,18 @@ h2 {
   gap: 12px;
 }
 
+.journey-search__via {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+/* line the × up with the input, below the autocomplete's label */
+.journey-search__via > .button {
+  margin-top: 28px;
+}
+
 .route-history {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

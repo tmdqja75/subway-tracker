@@ -18,6 +18,10 @@ class TmapError(Exception):
     pass
 
 
+class TmapNoRouteError(TmapError):
+    """HTTP 200 with no plan: Tmap found no route (e.g. hop too short)."""
+
+
 @dataclass(frozen=True)
 class TmapRouteSearchResult:
     itineraries: list[Itinerary]
@@ -96,6 +100,15 @@ def _transit_summary(mode: str, leg: SubwayLeg) -> str:
     return f"{emoji} {leg.route}: {leg.start_name} → {leg.end_name}"
 
 
+def _summary_from_legs(legs: list[SubwayLeg]) -> list[str]:
+    summary = []
+    for leg in legs:
+        summary.append(_transit_summary(leg.mode, leg))
+        if leg.transfer_walk_time >= 60:
+            summary.append(f"🚶 도보 {leg.transfer_walk_time // 60}분")
+    return summary
+
+
 def reverse_itinerary(itinerary: Itinerary) -> Itinerary:
     """Flip an itinerary to the opposite travel direction.
 
@@ -128,19 +141,34 @@ def reverse_itinerary(itinerary: Itinerary) -> Itinerary:
                 transfer_walk_time=walk_source.transfer_walk_time if walk_source else 0,
             )
         )
-    summary = []
-    for leg in new_legs:
-        summary.append(_transit_summary(leg.mode, leg))
-        if leg.transfer_walk_time >= 60:
-            summary.append(f"🚶 도보 {leg.transfer_walk_time // 60}분")
     return Itinerary(
         total_time=itinerary.total_time,
         transfer_count=itinerary.transfer_count,
         total_walk_time=itinerary.total_walk_time,
         fare=itinerary.fare,
         legs=new_legs,
-        summary=summary,
+        summary=_summary_from_legs(new_legs),
         is_reversed=True,
+    )
+
+
+def join_itineraries(a: Itinerary, b: Itinerary) -> Itinerary:
+    """Chain two itineraries that meet at a via station into one trip.
+
+    Tmap transit has no waypoint parameter, so via routes are separate
+    searches glued together here. Legs are never merged at the via, even on
+    the same route name: branch junctions (성수, 신도림, 구로, …) share a
+    route name across trains that don't run through, so the rider re-boards.
+    Fare is unknown: Korean fares are distance-based, so halves don't add.
+    """
+    legs = [*a.legs, *b.legs]
+    return Itinerary(
+        total_time=a.total_time + b.total_time,
+        transfer_count=a.transfer_count + b.transfer_count + 1,
+        total_walk_time=a.total_walk_time + b.total_walk_time,
+        fare=None,
+        legs=legs,
+        summary=_summary_from_legs(legs),
     )
 
 
@@ -149,7 +177,7 @@ def _parse_itineraries(data: dict) -> list[Itinerary]:
     if not plan:
         # Tmap signals "no route" / errors via a result object
         msg = data.get("result", {}).get("message", "no plan in response")
-        raise TmapError(f"Tmap: {msg}")
+        raise TmapNoRouteError(f"Tmap: {msg}")
 
     itineraries = []
     for it in plan.get("itineraries", []):
@@ -201,7 +229,6 @@ async def search_routes_with_raw_response(
     start_lat: float,
     end_lon: float,
     end_lat: float,
-    count: int = 5,
 ) -> TmapRouteSearchResult:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
@@ -212,7 +239,6 @@ async def search_routes_with_raw_response(
                 "startY": str(start_lat),
                 "endX": str(end_lon),
                 "endY": str(end_lat),
-                "count": count,
                 "lang": 0,
                 "format": "json",
             },
@@ -233,7 +259,6 @@ async def search_routes(
     start_lat: float,
     end_lon: float,
     end_lat: float,
-    count: int = 5,
 ) -> list[Itinerary]:
     result = await search_routes_with_raw_response(
         app_key,
@@ -241,6 +266,5 @@ async def search_routes(
         start_lat,
         end_lon,
         end_lat,
-        count=count,
     )
     return result.itineraries

@@ -9,7 +9,7 @@ from app.db import ROUTE_OPTIONS_CACHE_FORMAT_VERSION, Database
 from app.models import ArrivingTrain, Itinerary, LegStation, OnboardTrain, Station, SubwayLeg
 from app.stations import StationRegistry
 from app.subway_feed import SubwayApiError
-from app.tmap import TmapRouteSearchResult, reverse_itinerary
+from app.tmap import TmapError, TmapNoRouteError, TmapRouteSearchResult, reverse_itinerary
 
 
 def make_itinerary(route: str = "수도권2호선") -> Itinerary:
@@ -777,3 +777,260 @@ def test_route_history_uses_persisted_journeys_and_resolves_station_endpoints(tm
         "lon": 127.0,
     }
     assert payload["recent"][1]["end"]["line"] == "4호선"
+
+VIA_STATIONS = [
+    Station(station_id="gangnam-2", name="강남", line="2호선", lat=37.10, lon=127.0),
+    Station(station_id="konkuk-2", name="건대입구", line="2호선", lat=37.20, lon=127.0),
+    Station(station_id="konkuk-7", name="건대입구", line="7호선", lat=37.21, lon=127.0),
+    Station(station_id="jamsil-2", name="잠실", line="2호선", lat=37.30, lon=127.0),
+    Station(station_id="sadang-2", name="사당", line="2호선", lat=37.40, lon=127.0),
+]
+NAME_BY_LAT = {s.lat: s.name for s in VIA_STATIONS}
+
+
+def via_leg(route, start, end, section_time, mode="SUBWAY"):
+    return SubwayLeg(
+        route=route,
+        line_key=None,
+        mode=mode,
+        section_time=section_time,
+        start_name=start,
+        end_name=end,
+        stations=[
+            LegStation(index=0, name=start, lat=37.0, lon=127.0),
+            LegStation(index=1, name=end, lat=37.1, lon=127.0),
+        ],
+    )
+
+
+def via_trip(route, start, end, section_time, walk=0, mode="SUBWAY"):
+    return Itinerary(
+        total_time=section_time + walk,
+        transfer_count=0,
+        total_walk_time=walk,
+        fare=1400,
+        legs=[via_leg(route, start, end, section_time, mode)],
+        summary=[],
+    )
+
+
+def make_via_client(tmp_path, monkeypatch, segments):
+    """segments: {(from_name, to_name): list[Itinerary] | Exception}"""
+    db = Database(tmp_path / "tracker.db")
+    app = make_app(db)
+    app.state.stations = StationRegistry(VIA_STATIONS)
+    calls = []
+
+    async def fake_search(app_key, start_lon, start_lat, end_lon, end_lat):
+        key = (NAME_BY_LAT[start_lat], NAME_BY_LAT[end_lat])
+        calls.append(key)
+        result = segments[key]
+        if isinstance(result, Exception):
+            raise result
+        return TmapRouteSearchResult(itineraries=result, raw_response_json="{}")
+
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fake_search)
+    return TestClient(app), db, calls
+
+
+def test_routes_joins_segments_through_one_via_fastest_first(tmp_path, monkeypatch):
+    client, db, calls = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [
+            via_trip("수도권7호선", "강남", "건대입구", 1500),
+            via_trip("수도권2호선", "강남", "건대입구", 1300),
+        ],
+        ("건대입구", "잠실"): [
+            via_trip("수도권2호선", "건대입구", "잠실", 480),
+            via_trip("2415", "건대입구", "잠실", 900, mode="BUS"),
+        ],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "start_id": "gangnam-2",
+        "end": "잠실", "end_id": "jamsil-2",
+        "vias": [{"name": "건대입구", "station_id": "konkuk-2"}],
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [it["total_time"] for it in body] == [1780, 1980]  # bus combos dropped
+    assert len(body[0]["legs"]) == 2  # never merged at the via: rider re-boards
+    assert all(it["fare"] is None and it["is_reversed"] is False for it in body)
+    assert sorted(calls) == [("강남", "건대입구"), ("건대입구", "잠실")]
+    assert db.get_cached_route_options("강남", "2호선", "건대입구", "2호선") is not None
+    assert db.get_cached_route_options("건대입구", "2호선", "잠실", "2호선") is not None
+
+
+def test_routes_via_dedupes_same_leg_sequence_and_caps_at_ten(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [
+            via_trip("7-slow", "강남", "건대입구", 600, walk=300),
+            *(via_trip(f"A{i}", "강남", "건대입구", 600 + i) for i in range(4)),
+            via_trip("7-slow", "강남", "건대입구", 600, walk=0),
+        ],
+        ("건대입구", "잠실"): [via_trip(f"B{i}", "건대입구", "잠실", 300 + i) for i in range(4)],
+    })
+
+    body = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    }).json()
+
+    assert len(body) == 10
+    times = [it["total_time"] for it in body]
+    assert times == sorted(times)
+    sequences = [tuple(leg["route"] for leg in it["legs"]) for it in body]
+    assert len(set(sequences)) == 10
+    slow = [it for it in body if it["legs"][0]["route"] == "7-slow"]
+    assert all(it["total_walk_time"] == 0 for it in slow)  # faster duplicate kept
+
+
+def test_routes_with_two_vias_resolves_names_and_chains_three_segments(tmp_path, monkeypatch):
+    client, _, calls = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [via_trip("L1", "강남", "건대입구", 100)],
+        ("건대입구", "잠실"): [via_trip("L2", "건대입구", "잠실", 200)],
+        ("잠실", "사당"): [via_trip("L3", "잠실", "사당", 300)],
+    })
+
+    body = client.post("/api/routes", json={
+        "start": "강남", "end": "사당",
+        "vias": [{"name": "건대입구"}, {"name": "잠실"}],
+    }).json()
+
+    assert len(calls) == 3
+    assert [leg["route"] for leg in body[0]["legs"]] == ["L1", "L2", "L3"]
+    assert body[0]["transfer_count"] == 2
+    assert body[0]["total_time"] == 600
+
+
+def test_routes_ignores_blank_vias(tmp_path, monkeypatch):
+    client, _, calls = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "잠실"): [via_trip("수도권2호선", "강남", "잠실", 900)],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "  "}],
+    })
+
+    assert response.status_code == 200
+    assert calls == [("강남", "잠실")]
+    assert response.json()[0]["fare"] == 1400  # plain search, not joined
+
+
+def test_routes_rejects_more_than_three_vias(tmp_path, monkeypatch):
+    client, _, calls = make_via_client(tmp_path, monkeypatch, {})
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "사당",
+        "vias": [{"name": "건대입구"}, {"name": "잠실"}, {"name": "건대입구"}, {"name": "잠실"}],
+    })
+
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_routes_rejects_consecutive_identical_stops(tmp_path, monkeypatch):
+    client, _, calls = make_via_client(tmp_path, monkeypatch, {})
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "강남"}],
+    })
+
+    assert response.status_code == 400
+    assert calls == []
+
+
+def test_routes_via_404_names_the_empty_segment(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [via_trip("L1", "강남", "건대입구", 100)],
+        ("건대입구", "잠실"): [],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "건대입구 → 잠실 구간 경로를 찾지 못했어요."
+
+
+def test_routes_via_502_when_any_segment_fails(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [via_trip("L1", "강남", "건대입구", 100)],
+        ("건대입구", "잠실"): TmapError("Tmap: boom"),
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 502
+
+
+def test_routes_via_404_when_tmap_finds_no_route_for_a_short_hop(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): TmapNoRouteError("Tmap: 출발지/도착지 간 거리가 가까워서 탐색된 결과 없음"),
+        ("건대입구", "잠실"): [via_trip("L2", "건대입구", "잠실", 100)],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "강남 → 건대입구 구간 경로를 찾지 못했어요."
+
+
+def test_routes_via_fetches_segments_one_at_a_time(tmp_path, monkeypatch):
+    # Tmap throttles bursts (HTTP 429), so hops must not be fetched concurrently.
+    import asyncio
+
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {})
+    in_flight = 0
+    peak = 0
+
+    async def fake_search(app_key, start_lon, start_lat, end_lon, end_lat):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        a, b = NAME_BY_LAT[start_lat], NAME_BY_LAT[end_lat]
+        return TmapRouteSearchResult(itineraries=[via_trip(f"{a}-{b}", a, b, 100)], raw_response_json="{}")
+
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fake_search)
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "사당", "vias": [{"name": "건대입구"}, {"name": "잠실"}],
+    })
+
+    assert response.status_code == 200
+    assert peak == 1
+
+
+def test_routes_drops_bus_itineraries_but_caches_the_full_tmap_answer(tmp_path, monkeypatch):
+    client, db, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "잠실"): [
+            via_trip("2000", "강남", "잠실", 600, mode="BUS"),
+            via_trip("수도권2호선", "강남", "잠실", 900),
+            via_trip("G", "강남", "잠실", 700, mode="EXPRESSBUS"),
+        ],
+    })
+
+    body = client.post("/api/routes", json={"start": "강남", "end": "잠실"}).json()
+
+    assert [it["legs"][0]["route"] for it in body] == ["수도권2호선"]
+    assert len(db.get_cached_route_options("강남", "2호선", "잠실", "2호선")) == 3
+
+
+def test_routes_via_404_when_a_hop_has_only_bus_routes(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [via_trip("L1", "강남", "건대입구", 100)],
+        ("건대입구", "잠실"): [via_trip("2415", "건대입구", "잠실", 900, mode="BUS")],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "건대입구 → 잠실 구간 경로를 찾지 못했어요."

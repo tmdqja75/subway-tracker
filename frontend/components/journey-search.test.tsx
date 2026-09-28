@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getRouteHistory, searchRoutes, searchStations } from "../lib/api";
+import { ApiError, getRouteHistory, searchRoutes, searchStations } from "../lib/api";
 import type { Itinerary, RouteHistoryResponse, Station } from "../lib/types";
 import { itinerary, station } from "../test/fixtures";
 import { JourneySearch } from "./journey-search";
 
-vi.mock("../lib/api", () => ({
+vi.mock("../lib/api", async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import("../lib/api")>()).ApiError,
   getRouteHistory: vi.fn(),
   searchRoutes: vi.fn(),
   searchStations: vi.fn(),
@@ -240,5 +241,89 @@ describe("JourneySearch", () => {
     });
     expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
+  });
+
+  it("adds up to three labelled via rows and removes a row", () => {
+    vi.mocked(searchStations).mockResolvedValue([]);
+    render(<JourneySearch onRoutes={vi.fn()} />);
+    const add = screen.getByRole("button", { name: "+ 경유역 추가" });
+
+    fireEvent.click(add);
+    fireEvent.click(add);
+    fireEvent.click(add);
+
+    expect(screen.getByRole("combobox", { name: "경유역 3" })).toBeVisible();
+    expect(add).toBeDisabled();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "경유역 3" }), { target: { value: "잠실" } });
+    fireEvent.click(screen.getByRole("button", { name: "경유역 2 삭제" }));
+
+    expect(screen.queryByRole("combobox", { name: "경유역 3" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "경유역 2" })).toHaveValue("잠실");
+    expect(add).toBeEnabled();
+  });
+
+  it("sends picked via stations in order and drops blank via rows", async () => {
+    vi.useFakeTimers();
+    const konkuk: Station = { ...station, station_id: "0212", name: "건대입구" };
+    // only the via query suggests anything, so exactly one listbox opens
+    vi.mocked(searchStations).mockImplementation(async (query) =>
+      query.includes("건대") ? [konkuk] : [],
+    );
+    vi.mocked(searchRoutes).mockResolvedValue([itinerary]);
+    render(<JourneySearch onRoutes={vi.fn()} />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "출발역" }), { target: { value: "강남" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "도착역" }), { target: { value: "잠실" } });
+    fireEvent.click(screen.getByRole("button", { name: "+ 경유역 추가" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ 경유역 추가" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "경유역 1" }), { target: { value: "건대" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    const option = screen.getByRole("option", { name: "건대입구 2호선" });
+    fireEvent.mouseDown(option);
+    fireEvent.click(option);
+
+    fireEvent.click(screen.getByRole("button", { name: "경로 찾기" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(searchRoutes).toHaveBeenCalledWith(
+      {
+        start: "강남",
+        end: "잠실",
+        vias: [{ name: "건대입구", station_id: "0212" }],
+      },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("clears via rows when a saved route is chosen", async () => {
+    vi.mocked(getRouteHistory).mockResolvedValue({
+      most_used: [{ start: station, end: destination }],
+      recent: [],
+    });
+    render(<JourneySearch onRoutes={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "+ 경유역 추가" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "강남 (2호선) → 홍대입구 (2호선)" }));
+
+    expect(screen.queryByRole("combobox", { name: "경유역 1" })).toBeNull();
+  });
+
+  it("shows the server's reason when a route search is rejected", async () => {
+    vi.mocked(searchStations).mockResolvedValue([]);
+    vi.mocked(searchRoutes).mockRejectedValue(
+      new ApiError("강남 → 건대입구 구간 경로를 찾지 못했어요.", 404),
+    );
+    render(<JourneySearch onRoutes={vi.fn()} />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "출발역" }), { target: { value: "강남" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "도착역" }), { target: { value: "잠실" } });
+    fireEvent.click(screen.getByRole("button", { name: "경로 찾기" }));
+
+    expect(await screen.findByText("강남 → 건대입구 구간 경로를 찾지 못했어요.")).toBeVisible();
   });
 });
