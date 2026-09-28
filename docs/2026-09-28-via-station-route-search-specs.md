@@ -56,8 +56,10 @@ rider force the route through up to three ordered via stations (경유역).
      (the current `/routes` cache logic, extracted). Each segment is cached
      under its own key, exactly like a normal search.
   3. Fold segments left to right: combine every itinerary so far with every
-     itinerary of the next segment via `join_itineraries`, sort by
-     `total_time`, keep the fastest 10 before the next fold.
+     itinerary of the next segment via `join_itineraries`, drop duplicates
+     with the same leg sequence (`(route, start_name, end_name)` per leg,
+     keeping the fastest), sort by `total_time`, keep the fastest 10 before
+     the next fold.
   4. Return the final list (≤10). No reversed-cache appending for via
      searches. Joined results are not cached themselves.
 - A segment with no itineraries → `404 no routes {from} → {to}`.
@@ -93,6 +95,9 @@ rider force the route through up to three ordered via stations (경유역).
 - `RouteSearchRequest` in `frontend/lib/types.ts` gains
   `vias?: { name: string; station_id?: string | null }[]`.
 
+Joined itineraries render in the existing route list unchanged: bus legs are
+kept (same as normal search) and no extra "경유" badge is shown.
+
 ## Known side effect
 
 Each via segment is written to `route_options_cache`, so segments appear in
@@ -104,8 +109,8 @@ Recent Route history. Accepted: they are real, re-searchable routes.
   - request body no longer contains `count`;
   - `join_itineraries`: transfer at via, merged same-line pass-through, fare
     `None`, summary rebuilt;
-  - `/routes` with 1 and 2 vias: segments fetched and cached, results sorted
-    and capped at 10;
+  - `/routes` with 1 and 2 vias: segments fetched and cached, duplicate leg
+    sequences collapsed, results sorted and capped at 10;
   - `400` for >3 vias and for consecutive identical stops; `404` naming the
     empty segment;
   - no-via path unchanged (existing tests stay green).
