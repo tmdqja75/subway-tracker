@@ -183,11 +183,23 @@ receives exact station IDs and can prefill both autocomplete selections without
 losing an interchange's selected line. Malformed historical itineraries or
 unresolvable station pairs are skipped safely.
 
+## Via-station search
+
+`POST /api/routes` accepts `vias: [{name, station_id?}]` (≤3 non-blank, else
+400; consecutive identical stops → 400). Each hop goes through
+`api._search_segment` (the shared cache-or-Tmap path, so hops land in
+`route_options_cache` and in Recent Route history). `api._join_segments` folds
+hops with `tmap.join_itineraries`, dedupes by `(route, start, end)` leg
+sequence and keeps the fastest 10 after each fold. `join_itineraries` merges a
+same-line ride through the via into one leg unless it U-turns, sets
+`fare=None`, and leaves the via transfer walk at 0. Via searches never append
+reversed cache hits.
+
 ## Data sources / external APIs
 
 | Client | Notes |
 |---|---|
-| `tmap.py` | POST `transit/routes`, needs `appKey` header. Parses `passShape.linestring` ("lon,lat lon,lat...") into `[lat,lon]` shape points. Errors surface via `result.message`, not HTTP status. |
+| `tmap.py` | POST `transit/routes`, needs `appKey` header. Parses `passShape.linestring` ("lon,lat lon,lat...") into `[lat,lon]` shape points. Errors surface via `result.message`, not HTTP status. Transit API has no waypoint parameter; `count` is omitted so Tmap's default/max of 10 applies. |
 | `seoul.py` | Two endpoints share one key: `realtimePosition` (poll boarded train), `realtimeStationArrival` (arrivals picker). Key rotation on 429/rate-limit error codes (`ERROR-337`) via `SEOUL_API_KEY_TWO`. Top-level error shapes vary — see `_check()`. `realtimeStationArrival` is inconsistent about parenthetical station-name suffixes (unlike `realtimePosition`, which always matches normalized names): some stations only match `normalize_name()`'s stripped form, others (e.g. `광나루` → only `광나루(장신대)` works) only match the CSV's full display name. `fetch_arrivals()` takes an `alt_station_name` fallback, retried once when the normalized query returns no results; `api._fetch_leg_arrivals()` supplies it from `StationRegistry.find()`. |
 | `stations.py` | CSV-based, `normalize_name()` strips parens/whitespace/trailing 역 to reconcile name spelling differences across Tmap/CSV/Seoul APIs — use this whenever comparing station names across sources. It is not a safe *query* string for `realtimeStationArrival` (see `seoul.py` row above); it is fine for `realtimePosition` matching and everywhere else. |
 | `reitti.py` | One OwnTracks point per HTTP request, 3 retries w/ backoff, dedup is server-side by timestamp so re-pushing all points on retry is fine. |
