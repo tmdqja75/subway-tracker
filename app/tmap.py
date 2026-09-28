@@ -201,7 +201,6 @@ async def search_routes_with_raw_response(
     start_lat: float,
     end_lon: float,
     end_lat: float,
-    count: int = 5,
 ) -> TmapRouteSearchResult:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
@@ -212,7 +211,6 @@ async def search_routes_with_raw_response(
                 "startY": str(start_lat),
                 "endX": str(end_lon),
                 "endY": str(end_lat),
-                "count": count,
                 "lang": 0,
                 "format": "json",
             },
@@ -233,7 +231,6 @@ async def search_routes(
     start_lat: float,
     end_lon: float,
     end_lat: float,
-    count: int = 5,
 ) -> list[Itinerary]:
     result = await search_routes_with_raw_response(
         app_key,
@@ -241,6 +238,5 @@ async def search_routes(
         start_lat,
         end_lon,
         end_lat,
-        count=count,
     )
     return result.itineraries

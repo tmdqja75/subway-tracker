@@ -8,7 +8,7 @@ from pathlib import Path
 from .models import Itinerary, TrackPoint
 from .stations import normalize_name
 
-ROUTE_OPTIONS_CACHE_FORMAT_VERSION = "4"
+ROUTE_OPTIONS_CACHE_FORMAT_VERSION = "5"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS journeys (

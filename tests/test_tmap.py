@@ -334,3 +334,14 @@ def test_reverse_itinerary_single_leg_has_no_transfer_walk():
     assert reversed_itinerary.legs[0].start_name == "사당"
     assert reversed_itinerary.legs[0].end_name == "강남"
     assert reversed_itinerary.legs[0].transfer_walk_time == 0
+
+
+@pytest.mark.asyncio
+async def test_search_routes_uses_tmap_default_result_count():
+    data = {"metaData": {"plan": {"itineraries": []}}}
+
+    with respx.mock:
+        route = respx.post(TRANSIT_URL).mock(return_value=Response(200, json=data))
+        await search_routes("key", 127.0, 37.0, 126.0, 37.5)
+
+    assert "count" not in json.loads(route.calls[0].request.content)
