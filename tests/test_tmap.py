@@ -5,7 +5,7 @@ import respx
 from httpx import Response
 
 from app.models import Itinerary, LegStation, SubwayLeg
-from app.tmap import TRANSIT_URL, reverse_itinerary, search_routes, search_routes_with_raw_response
+from app.tmap import TRANSIT_URL, join_itineraries, reverse_itinerary, search_routes, search_routes_with_raw_response
 
 
 @pytest.mark.asyncio
@@ -345,3 +345,75 @@ async def test_search_routes_uses_tmap_default_result_count():
         await search_routes("key", 127.0, 37.0, 126.0, 37.5)
 
     assert "count" not in json.loads(route.calls[0].request.content)
+
+
+def _leg(route, names, section_time=300, mode="SUBWAY"):
+    return SubwayLeg(
+        route=route,
+        line_key=None,
+        mode=mode,
+        section_time=section_time,
+        start_name=names[0],
+        end_name=names[-1],
+        stations=[
+            LegStation(index=i, name=n, lat=37.5 + i / 100, lon=127.0)
+            for i, n in enumerate(names)
+        ],
+        shape=[[37.5 + i / 100, 127.0] for i in range(len(names))],
+    )
+
+
+def _trip(*legs, walk=60):
+    return Itinerary(
+        total_time=sum(leg.section_time for leg in legs) + walk,
+        transfer_count=len(legs) - 1,
+        total_walk_time=walk,
+        fare=1400,
+        legs=list(legs),
+        summary=["stale"],
+    )
+
+
+def test_join_itineraries_transfers_at_the_via():
+    a = _trip(_leg("수도권7호선", ["논현", "건대입구"], 1500))
+    b = _trip(_leg("수도권2호선", ["건대입구", "잠실"], 480))
+
+    joined = join_itineraries(a, b)
+
+    assert [leg.route for leg in joined.legs] == ["수도권7호선", "수도권2호선"]
+    assert joined.total_time == a.total_time + b.total_time
+    assert joined.total_walk_time == 120
+    assert joined.transfer_count == 1
+    assert joined.fare is None
+    assert joined.is_reversed is False
+    assert joined.legs[0].transfer_walk_time == 0
+    assert joined.summary == [
+        "🚇 수도권7호선: 논현 → 건대입구",
+        "🚇 수도권2호선: 건대입구 → 잠실",
+    ]
+
+
+def test_join_itineraries_merges_a_ride_through_the_via_on_the_same_line():
+    a = _trip(_leg("수도권2호선", ["강남", "삼성", "건대입구"], 900))
+    b = _trip(_leg("수도권2호선", ["건대입구", "구의", "잠실"], 480))
+
+    joined = join_itineraries(a, b)
+
+    assert len(joined.legs) == 1
+    leg = joined.legs[0]
+    assert [s.name for s in leg.stations] == ["강남", "삼성", "건대입구", "구의", "잠실"]
+    assert [s.index for s in leg.stations] == [0, 1, 2, 3, 4]
+    assert (leg.start_name, leg.end_name) == ("강남", "잠실")
+    assert leg.section_time == 1380
+    assert joined.transfer_count == 0
+    assert joined.summary == ["🚇 수도권2호선: 강남 → 잠실"]
+
+
+def test_join_itineraries_keeps_a_same_line_u_turn_as_two_legs():
+    a = _trip(_leg("수도권2호선", ["성수", "건대입구"]))
+    b = _trip(_leg("수도권2호선", ["건대입구", "성수", "뚝섬"]))
+
+    joined = join_itineraries(a, b)
+
+    assert len(joined.legs) == 2
+    assert joined.transfer_count == 1

@@ -96,6 +96,15 @@ def _transit_summary(mode: str, leg: SubwayLeg) -> str:
     return f"{emoji} {leg.route}: {leg.start_name} → {leg.end_name}"
 
 
+def _summary_from_legs(legs: list[SubwayLeg]) -> list[str]:
+    summary = []
+    for leg in legs:
+        summary.append(_transit_summary(leg.mode, leg))
+        if leg.transfer_walk_time >= 60:
+            summary.append(f"🚶 도보 {leg.transfer_walk_time // 60}분")
+    return summary
+
+
 def reverse_itinerary(itinerary: Itinerary) -> Itinerary:
     """Flip an itinerary to the opposite travel direction.
 
@@ -128,19 +137,59 @@ def reverse_itinerary(itinerary: Itinerary) -> Itinerary:
                 transfer_walk_time=walk_source.transfer_walk_time if walk_source else 0,
             )
         )
-    summary = []
-    for leg in new_legs:
-        summary.append(_transit_summary(leg.mode, leg))
-        if leg.transfer_walk_time >= 60:
-            summary.append(f"🚶 도보 {leg.transfer_walk_time // 60}분")
     return Itinerary(
         total_time=itinerary.total_time,
         transfer_count=itinerary.transfer_count,
         total_walk_time=itinerary.total_walk_time,
         fare=itinerary.fare,
         legs=new_legs,
-        summary=summary,
+        summary=_summary_from_legs(new_legs),
         is_reversed=True,
+    )
+
+
+def join_itineraries(a: Itinerary, b: Itinerary) -> Itinerary:
+    """Chain two itineraries that meet at a via station into one trip.
+
+    Tmap transit has no waypoint parameter, so via routes are separate
+    searches glued together here. Staying on the same line through the via
+    (not a U-turn) becomes one leg so tracking doesn't ask to re-board.
+    Fare is unknown: Korean fares are distance-based, so halves don't add.
+    """
+    last, first = a.legs[-1], b.legs[0]
+    ride_through = (
+        last.route == first.route
+        and len(last.stations) >= 2
+        and len(first.stations) >= 2
+        and last.stations[-2].name != first.stations[1].name
+    )
+    if ride_through:
+        stations = [*last.stations, *first.stations[1:]]
+        merged = SubwayLeg(
+            route=last.route,
+            line_key=last.line_key,
+            mode=last.mode,
+            section_time=last.section_time + first.section_time,
+            start_name=last.start_name,
+            end_name=first.end_name,
+            stations=[
+                LegStation(index=i, name=s.name, lat=s.lat, lon=s.lon)
+                for i, s in enumerate(stations)
+            ],
+            shape=[*last.shape, *first.shape],
+            transfer_walk_shape=first.transfer_walk_shape,
+            transfer_walk_time=first.transfer_walk_time,
+        )
+        legs = [*a.legs[:-1], merged, *b.legs[1:]]
+    else:
+        legs = [*a.legs, *b.legs]
+    return Itinerary(
+        total_time=a.total_time + b.total_time,
+        transfer_count=a.transfer_count + b.transfer_count + (0 if ride_through else 1),
+        total_walk_time=a.total_walk_time + b.total_walk_time,
+        fare=None,
+        legs=legs,
+        summary=_summary_from_legs(legs),
     )
 
 
