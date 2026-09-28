@@ -270,6 +270,7 @@ persist outside the container.
 - Route search takes up to three optional **경유역** (via stations) via
   `+ 경유역 추가`. Tmap has no waypoint support, so each hop is searched
   (and cached) separately and the fastest 10 distinct combinations are shown.
+  Bus itineraries are filtered out before joining, as in normal search.
   Joined routes show no fare, since Korean fares depend on total distance.
 - Once a journey's trace has been fully delivered, its completion dashboard
   offers **"새 여정 시작하기"**. This returns the rider to the first

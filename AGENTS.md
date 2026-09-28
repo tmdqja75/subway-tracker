@@ -189,7 +189,10 @@ unresolvable station pairs are skipped safely.
 400; consecutive identical stops → 400). Each hop goes, one at a time (Tmap
 returns HTTP 429 on concurrent bursts), through
 `api._search_segment` (the shared cache-or-Tmap path, so hops land in
-`route_options_cache` and in Recent Route history). `api._join_segments` folds
+`route_options_cache` and in Recent Route history). `_search_segment` drops
+itineraries with a `BUS`/`EXPRESSBUS` leg on read (cache keeps the full Tmap
+answer) for direct and via searches alike, and 404s when nothing rail is left.
+`api._join_segments` folds
 hops with `tmap.join_itineraries`, dedupes by `(route, start, end)` leg
 sequence and keeps the fastest 10 after each fold. `join_itineraries` never merges
 legs at the via (branch junctions like 2호선 성수/신도림 share a route name
