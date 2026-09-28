@@ -17,6 +17,14 @@ type FieldErrors = {
   destination?: string;
 };
 
+type ViaRow = {
+  key: number;
+  value: string;
+  station: Station | null;
+};
+
+const MAX_VIAS = 3;
+
 type RouteHistorySectionProps = {
   heading: "Most Used Route" | "Recent Route";
   items: RouteHistoryItem[];
@@ -84,6 +92,10 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
   const [destination, setDestination] = useState("");
   const [originStation, setOriginStation] = useState<Station | null>(null);
   const [destinationStation, setDestinationStation] = useState<Station | null>(null);
+  const [vias, setVias] = useState<ViaRow[]>([]);
+  const nextViaKey = useRef(0);
+  const updateVia = (key: number, patch: Partial<ViaRow>) =>
+    setVias((rows) => rows.map((row) => (row.key === key ? { ...row, ...patch } : row)));
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [requestError, setRequestError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -134,6 +146,7 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
     setDestination(end.name);
     setOriginStation(start);
     setDestinationStation(end);
+    setVias([]);
     setFieldErrors({});
     setRequestError(null);
   };
@@ -155,6 +168,13 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
       return;
     }
 
+    const viaStops = vias
+      .filter((row) => row.value.trim())
+      .map((row) => ({
+        name: row.value.trim(),
+        ...(row.station ? { station_id: row.station.station_id } : {}),
+      }));
+
     requestController.current?.abort();
     const controller = new AbortController();
     requestController.current = controller;
@@ -169,6 +189,7 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
           end,
           ...(originStation ? { start_id: originStation.station_id } : {}),
           ...(destinationStation ? { end_id: destinationStation.station_id } : {}),
+          ...(viaStops.length ? { vias: viaStops } : {}),
         },
         controller.signal,
       );
@@ -207,6 +228,38 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
           validationError={fieldErrors.origin}
           value={origin}
         />
+
+        {vias.map((row, index) => (
+          <div className="journey-search__via" key={row.key}>
+            <StationAutocomplete
+              disabled={isLoading}
+              id={`via-station-${row.key}`}
+              label={`경유역 ${index + 1}`}
+              onStationSelect={(station) => updateVia(row.key, { station })}
+              onValueChange={(value) => updateVia(row.key, { value })}
+              placeholder="경유역을 입력하세요"
+              selectedStation={row.station}
+              value={row.value}
+            />
+            <Button
+              aria-label={`경유역 ${index + 1} 삭제`}
+              disabled={isLoading}
+              onClick={() => setVias((rows) => rows.filter((other) => other.key !== row.key))}
+              variant="ghost"
+            >
+              ×
+            </Button>
+          </div>
+        ))}
+        <Button
+          disabled={isLoading || vias.length >= MAX_VIAS}
+          onClick={() =>
+            setVias((rows) => [...rows, { key: nextViaKey.current++, value: "", station: null }])
+          }
+          variant="secondary"
+        >
+          + 경유역 추가
+        </Button>
 
         <StationAutocomplete
           disabled={isLoading}

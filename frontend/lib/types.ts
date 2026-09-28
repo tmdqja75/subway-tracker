@@ -177,11 +177,17 @@ export interface IdleJourneySnapshot {
 
 export type CurrentJourneyResponse = ActiveJourneySnapshot | IdleJourneySnapshot;
 
+export interface ViaStop {
+  name: string;
+  station_id?: string | null;
+}
+
 export interface RouteSearchRequest {
   start: string;
   end: string;
   start_id?: string | null;
   end_id?: string | null;
+  vias?: ViaStop[];
 }
 
 export interface StartJourneyRequest {
