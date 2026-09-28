@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { getRouteHistory, searchRoutes } from "../lib/api";
+import { ApiError, getRouteHistory, searchRoutes } from "../lib/api";
 import type { Itinerary, RouteHistoryItem, RouteHistoryResponse, Station } from "../lib/types";
 import { Button } from "./ui/button";
 import { LineBadge } from "./ui/line-badge";
@@ -196,9 +196,14 @@ export function JourneySearch({ onRoutes }: JourneySearchProps) {
       if (!controller.signal.aborted) {
         onRoutes(itineraries);
       }
-    } catch {
+    } catch (error: unknown) {
       if (!controller.signal.aborted) {
-        setRequestError("경로를 찾지 못했어요. 잠시 후 다시 시도해 주세요.");
+        // 4xx details name the bad station/segment; retrying won't help there
+        const isClientError =
+          error instanceof ApiError && error.status !== undefined && error.status < 500;
+        setRequestError(
+          isClientError ? error.message : "경로를 찾지 못했어요. 잠시 후 다시 시도해 주세요.",
+        );
       }
     } finally {
       if (requestController.current === controller && !controller.signal.aborted) {

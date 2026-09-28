@@ -5,7 +5,7 @@ import respx
 from httpx import Response
 
 from app.models import Itinerary, LegStation, SubwayLeg
-from app.tmap import TRANSIT_URL, join_itineraries, reverse_itinerary, search_routes, search_routes_with_raw_response
+from app.tmap import TRANSIT_URL, TmapNoRouteError, join_itineraries, reverse_itinerary, search_routes, search_routes_with_raw_response
 
 
 @pytest.mark.asyncio
@@ -403,3 +403,13 @@ def test_join_itineraries_never_merges_same_route_legs_at_the_via():
 
     assert [(leg.start_name, leg.end_name) for leg in joined.legs] == [("용답", "성수"), ("성수", "뚝섬")]
     assert joined.transfer_count == 1
+
+
+@pytest.mark.asyncio
+async def test_search_routes_reports_a_plan_less_answer_as_no_route():
+    data = {"result": {"status": 11, "message": "출발지/도착지 간 거리가 가까워서 탐색된 결과 없음"}}
+
+    with respx.mock:
+        respx.post(TRANSIT_URL).mock(return_value=Response(200, json=data))
+        with pytest.raises(TmapNoRouteError):
+            await search_routes("key", 127.0, 37.0, 126.0, 37.5)

@@ -18,6 +18,10 @@ class TmapError(Exception):
     pass
 
 
+class TmapNoRouteError(TmapError):
+    """HTTP 200 with no plan: Tmap found no route (e.g. hop too short)."""
+
+
 @dataclass(frozen=True)
 class TmapRouteSearchResult:
     itineraries: list[Itinerary]
@@ -173,7 +177,7 @@ def _parse_itineraries(data: dict) -> list[Itinerary]:
     if not plan:
         # Tmap signals "no route" / errors via a result object
         msg = data.get("result", {}).get("message", "no plan in response")
-        raise TmapError(f"Tmap: {msg}")
+        raise TmapNoRouteError(f"Tmap: {msg}")
 
     itineraries = []
     for it in plan.get("itineraries", []):

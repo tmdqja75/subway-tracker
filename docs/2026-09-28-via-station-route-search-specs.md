@@ -62,22 +62,23 @@ rider force the route through up to three ordered via stations (경유역).
      the next fold.
   4. Return the final list (≤10). No reversed-cache appending for via
      searches. Joined results are not cached themselves.
-- A segment with no itineraries → `404 no routes {from} → {to}`.
+- A segment with no itineraries, or a Tmap answer without a `plan` (e.g. a
+  hop too short to route) → `404 {from} → {to} 구간 경로를 찾지 못했어요.`
+- The search form shows the `detail` of any 4xx response to the rider;
+  5xx keeps the generic retry message.
 - A Tmap failure on any segment → `502`, as today.
 
 ### `join_itineraries(a, b) -> Itinerary` (in `app/tmap.py`)
 
-- `legs = a.legs + b.legs`, except when `a.legs[-1].route == b.legs[0].route`
-  and the ride continues in the same direction (`a`'s second-to-last station
-  is not `b`'s second station — a U-turn at the via stays two legs so the
-  rider re-boards): merge those two legs into
-  one — stations concatenated with the duplicate via station dropped and
-  indices renumbered, shapes concatenated, `section_time` summed, the merged
-  leg keeps `b.legs[0]`'s transfer walk fields.
+- `legs = a.legs + b.legs`. Legs are never merged at the via, even with the
+  same route name: branch junctions (2호선 성수/신도림, 1호선 구로, 5호선 강동,
+  …) share a Tmap route name across trains that don't run through. A pure
+  pass-through via therefore shows one extra transfer and asks the rider to
+  confirm boarding at the via.
 - `total_time`, `total_walk_time`: summed.
-- `transfer_count`: `a + b + 1`, or `a + b` when legs were merged.
+- `transfer_count`: `a + b + 1`.
 - `fare`: `None` (Korean fares are distance-based; summing halves overstates).
-- The last leg of `a` (when not merged) keeps `transfer_walk_time = 0` and an
+- The last leg of `a` keeps `transfer_walk_time = 0` and an
   empty `transfer_walk_shape`: Tmap does not describe the walk at the via.
 - `summary`: rebuilt from the joined legs with the same helper used by
   `reverse_itinerary` (extracted, not duplicated).
@@ -107,7 +108,7 @@ Recent Route history. Accepted: they are real, re-searchable routes.
 
 - pytest (respx-mocked Tmap):
   - request body no longer contains `count`;
-  - `join_itineraries`: transfer at via, merged same-line pass-through, fare
+  - `join_itineraries`: transfer at via, same-route legs never merged, fare
     `None`, summary rebuilt;
   - `/routes` with 1 and 2 vias: segments fetched and cached, duplicate leg
     sequences collapsed, results sorted and capped at 10;

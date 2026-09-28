@@ -190,9 +190,11 @@ unresolvable station pairs are skipped safely.
 `api._search_segment` (the shared cache-or-Tmap path, so hops land in
 `route_options_cache` and in Recent Route history). `api._join_segments` folds
 hops with `tmap.join_itineraries`, dedupes by `(route, start, end)` leg
-sequence and keeps the fastest 10 after each fold. `join_itineraries` merges a
-same-line ride through the via into one leg unless it U-turns, sets
-`fare=None`, and leaves the via transfer walk at 0. Via searches never append
+sequence and keeps the fastest 10 after each fold. `join_itineraries` never merges
+legs at the via (branch junctions like 2호선 성수/신도림 share a route name
+across trains that don't run through), sets `fare=None`, and leaves the via
+transfer walk at 0. A plan-less Tmap answer raises `TmapNoRouteError` → 404
+naming the hop; the search form shows 4xx `detail` text to the rider. Via searches never append
 reversed cache hits.
 
 ## Data sources / external APIs

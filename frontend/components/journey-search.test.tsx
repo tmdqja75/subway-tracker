@@ -1,12 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getRouteHistory, searchRoutes, searchStations } from "../lib/api";
+import { ApiError, getRouteHistory, searchRoutes, searchStations } from "../lib/api";
 import type { Itinerary, RouteHistoryResponse, Station } from "../lib/types";
 import { itinerary, station } from "../test/fixtures";
 import { JourneySearch } from "./journey-search";
 
-vi.mock("../lib/api", () => ({
+vi.mock("../lib/api", async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import("../lib/api")>()).ApiError,
   getRouteHistory: vi.fn(),
   searchRoutes: vi.fn(),
   searchStations: vi.fn(),
@@ -310,5 +311,19 @@ describe("JourneySearch", () => {
     fireEvent.click(await screen.findByRole("button", { name: "강남 (2호선) → 홍대입구 (2호선)" }));
 
     expect(screen.queryByRole("combobox", { name: "경유역 1" })).toBeNull();
+  });
+
+  it("shows the server's reason when a route search is rejected", async () => {
+    vi.mocked(searchStations).mockResolvedValue([]);
+    vi.mocked(searchRoutes).mockRejectedValue(
+      new ApiError("강남 → 건대입구 구간 경로를 찾지 못했어요.", 404),
+    );
+    render(<JourneySearch onRoutes={vi.fn()} />);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "출발역" }), { target: { value: "강남" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "도착역" }), { target: { value: "잠실" } });
+    fireEvent.click(screen.getByRole("button", { name: "경로 찾기" }));
+
+    expect(await screen.findByText("강남 → 건대입구 구간 경로를 찾지 못했어요.")).toBeVisible();
   });
 });

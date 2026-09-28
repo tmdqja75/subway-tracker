@@ -9,7 +9,7 @@ from app.db import ROUTE_OPTIONS_CACHE_FORMAT_VERSION, Database
 from app.models import ArrivingTrain, Itinerary, LegStation, OnboardTrain, Station, SubwayLeg
 from app.stations import StationRegistry
 from app.subway_feed import SubwayApiError
-from app.tmap import TmapError, TmapRouteSearchResult, reverse_itinerary
+from app.tmap import TmapError, TmapNoRouteError, TmapRouteSearchResult, reverse_itinerary
 
 
 def make_itinerary(route: str = "수도권2호선") -> Itinerary:
@@ -951,7 +951,7 @@ def test_routes_via_404_names_the_empty_segment(tmp_path, monkeypatch):
     })
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "no routes 건대입구 → 잠실"
+    assert response.json()["detail"] == "건대입구 → 잠실 구간 경로를 찾지 못했어요."
 
 
 def test_routes_via_502_when_any_segment_fails(tmp_path, monkeypatch):
@@ -965,3 +965,17 @@ def test_routes_via_502_when_any_segment_fails(tmp_path, monkeypatch):
     })
 
     assert response.status_code == 502
+
+
+def test_routes_via_404_when_tmap_finds_no_route_for_a_short_hop(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): TmapNoRouteError("Tmap: 출발지/도착지 간 거리가 가까워서 탐색된 결과 없음"),
+        ("건대입구", "잠실"): [via_trip("L2", "건대입구", "잠실", 100)],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "강남 → 건대입구 구간 경로를 찾지 못했어요."

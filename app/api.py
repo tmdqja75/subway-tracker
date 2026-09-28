@@ -20,7 +20,7 @@ from .models import (
 from .reitti import ReittiError
 from .stations import normalize_name
 from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
-from .tmap import TmapError, join_itineraries, reverse_itinerary, search_routes_with_raw_response
+from .tmap import TmapError, TmapNoRouteError, join_itineraries, reverse_itinerary, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -61,7 +61,7 @@ def _route_cache_key(start, end) -> tuple[str, str, str, str]:
 def _resolve_station(registry, name: str, station_id: str | None):
     station = (registry.get(station_id) if station_id else None) or registry.find(name)
     if not station:
-        raise HTTPException(404, f"station not found: {name}")
+        raise HTTPException(404, f"역을 찾지 못했어요: {name}")
     return station
 
 
@@ -81,10 +81,12 @@ async def _search_segment(db, settings, start, end) -> list[Itinerary]:
         route_search = await search_routes_with_raw_response(
             settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
         )
+    except TmapNoRouteError:
+        route_search = None
     except TmapError as e:
         raise HTTPException(502, str(e))
-    if not route_search.itineraries:
-        raise HTTPException(404, f"no routes {start.name} → {end.name}")
+    if route_search is None or not route_search.itineraries:
+        raise HTTPException(404, f"{start.name} → {end.name} 구간 경로를 찾지 못했어요.")
     db.cache_route_options(
         *cache_key,
         route_search.itineraries,
@@ -148,7 +150,7 @@ async def routes(request: Request, body: RouteSearchRequest):
     db = request.app.state.manager.db
     vias = [via for via in body.vias if via.name.strip()]
     if len(vias) > MAX_VIAS:
-        raise HTTPException(400, f"at most {MAX_VIAS} via stations")
+        raise HTTPException(400, f"경유역은 최대 {MAX_VIAS}개까지 추가할 수 있어요.")
     stops = [
         _resolve_station(registry, body.start, body.start_id),
         *(_resolve_station(registry, via.name.strip(), via.station_id) for via in vias),
@@ -157,7 +159,7 @@ async def routes(request: Request, body: RouteSearchRequest):
     hops = list(zip(stops, stops[1:]))
     for a, b in hops:
         if normalize_name(a.name) == normalize_name(b.name):
-            raise HTTPException(400, f"consecutive stops are the same station: {a.name}")
+            raise HTTPException(400, f"같은 역이 연달아 있어요: {a.name}")
 
     if vias:
         segments = await asyncio.gather(*(_search_segment(db, settings, a, b) for a, b in hops))
