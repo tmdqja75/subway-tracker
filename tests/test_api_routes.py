@@ -853,9 +853,8 @@ def test_routes_joins_segments_through_one_via_fastest_first(tmp_path, monkeypat
 
     assert response.status_code == 200
     body = response.json()
-    assert [it["total_time"] for it in body] == [1780, 1980, 2200, 2400]
+    assert [it["total_time"] for it in body] == [1780, 1980]  # bus combos dropped
     assert len(body[0]["legs"]) == 2  # never merged at the via: rider re-boards
-    assert body[2]["legs"][1]["mode"] == "BUS"  # bus combos kept
     assert all(it["fare"] is None and it["is_reversed"] is False for it in body)
     assert sorted(calls) == [("강남", "건대입구"), ("건대입구", "잠실")]
     assert db.get_cached_route_options("강남", "2호선", "건대입구", "2호선") is not None
@@ -1006,3 +1005,32 @@ def test_routes_via_fetches_segments_one_at_a_time(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert peak == 1
+
+
+def test_routes_drops_bus_itineraries_but_caches_the_full_tmap_answer(tmp_path, monkeypatch):
+    client, db, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "잠실"): [
+            via_trip("2000", "강남", "잠실", 600, mode="BUS"),
+            via_trip("수도권2호선", "강남", "잠실", 900),
+            via_trip("G", "강남", "잠실", 700, mode="EXPRESSBUS"),
+        ],
+    })
+
+    body = client.post("/api/routes", json={"start": "강남", "end": "잠실"}).json()
+
+    assert [it["legs"][0]["route"] for it in body] == ["수도권2호선"]
+    assert len(db.get_cached_route_options("강남", "2호선", "잠실", "2호선")) == 3
+
+
+def test_routes_via_404_when_a_hop_has_only_bus_routes(tmp_path, monkeypatch):
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {
+        ("강남", "건대입구"): [via_trip("L1", "강남", "건대입구", 100)],
+        ("건대입구", "잠실"): [via_trip("2415", "건대입구", "잠실", 900, mode="BUS")],
+    })
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "잠실", "vias": [{"name": "건대입구"}],
+    })
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "건대입구 → 잠실 구간 경로를 찾지 못했어요."

@@ -97,8 +97,12 @@ rider force the route through up to three ordered via stations (경유역).
 - `RouteSearchRequest` in `frontend/lib/types.ts` gains
   `vias?: { name: string; station_id?: string | null }[]`.
 
-Joined itineraries render in the existing route list unchanged: bus legs are
-kept (same as normal search) and no extra "경유" badge is shown.
+Itineraries with a `BUS`/`EXPRESSBUS` leg are dropped server-side for every
+search (the route list never offered them), before via joins so the
+fastest-10 slots go to showable routes. The cache keeps Tmap's full answer;
+filtering happens on read. A hop with only bus options → the same `404`
+naming the hop. Joined itineraries render in the existing route list
+unchanged, with no extra "경유" badge.
 
 ## Known side effect
 

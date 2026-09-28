@@ -41,6 +41,7 @@ class RouteSearchRequest(BaseModel):
 
 
 MAX_VIAS = 3
+BUS_MODES = {"BUS", "EXPRESSBUS"}
 MAX_JOINED_ROUTES = 10
 
 
@@ -64,34 +65,46 @@ def _resolve_station(registry, name: str, station_id: str | None):
     return station
 
 
+def _without_bus(itineraries: list[Itinerary]) -> list[Itinerary]:
+    # the rider UI doesn't offer bus routes; filter before via joins so the
+    # fastest-10 slots go to routes the rider can actually pick
+    return [it for it in itineraries if not any(leg.mode in BUS_MODES for leg in it.legs)]
+
+
 async def _search_segment(db, settings, start, end) -> list[Itinerary]:
-    """Cached Tmap search for one start→end hop."""
+    """Cached Tmap search for one start→end hop, bus itineraries dropped.
+
+    The cache keeps Tmap's full answer; filtering happens on read.
+    """
     cache_key = _route_cache_key(start, end)
-    cached = db.get_cached_route_options(*cache_key)
-    if cached is not None:
+    itineraries = db.get_cached_route_options(*cache_key)
+    if itineraries is not None:
         log.debug(
             "route cache hit start=%s/%s end=%s/%s",
             cache_key[0], cache_key[1], cache_key[2], cache_key[3],
         )
         db.touch_cached_route_options(*cache_key)
-        return cached
-    log.info("Tmap poll start=%s end=%s", start.name, end.name)
-    try:
-        route_search = await search_routes_with_raw_response(
-            settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
-        )
-    except TmapNoRouteError:
-        route_search = None
-    except TmapError as e:
-        raise HTTPException(502, str(e))
-    if route_search is None or not route_search.itineraries:
+    else:
+        log.info("Tmap poll start=%s end=%s", start.name, end.name)
+        try:
+            route_search = await search_routes_with_raw_response(
+                settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
+            )
+        except TmapNoRouteError:
+            route_search = None
+        except TmapError as e:
+            raise HTTPException(502, str(e))
+        itineraries = route_search.itineraries if route_search else []
+        if itineraries:
+            db.cache_route_options(
+                *cache_key,
+                itineraries,
+                raw_tmap_response=route_search.raw_response_json,
+            )
+    rail = _without_bus(itineraries)
+    if not rail:
         raise HTTPException(404, f"{start.name} → {end.name} 구간 경로를 찾지 못했어요.")
-    db.cache_route_options(
-        *cache_key,
-        route_search.itineraries,
-        raw_tmap_response=route_search.raw_response_json,
-    )
-    return route_search.itineraries
+    return rail
 
 
 def _join_segments(segments: list[list[Itinerary]]) -> list[Itinerary]:
@@ -178,7 +191,7 @@ async def routes(request: Request, body: RouteSearchRequest):
             reverse_key[0], reverse_key[1], reverse_key[2], reverse_key[3],
         )
         db.touch_cached_route_options(*reverse_key)
-        itineraries = [*itineraries, *(reverse_itinerary(it) for it in reverse_cached)]
+        itineraries = [*itineraries, *(reverse_itinerary(it) for it in _without_bus(reverse_cached))]
 
     return [it.model_dump() for it in itineraries]
 
