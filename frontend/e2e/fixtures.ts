@@ -285,9 +285,6 @@ export async function installMockBackend(page: Page, state: MockApiState) {
 
   await page.route("https://*.tile.openstreetmap.org/**", fulfillOpenStreetMapTile);
   await page.route("https://tile.openstreetmap.org/**", fulfillOpenStreetMapTile);
-  await page.route("**/marker-*.png", async (route) => {
-    await route.fulfill({ body: transparentPng, contentType: "image/png", status: 200 });
-  });
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();

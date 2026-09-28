@@ -42,7 +42,7 @@ const leaflet = vi.hoisted(() => {
     });
   };
   reset();
-  return { latLngBounds: vi.fn(() => ({ isValid: () => true })), map, mapInstances, marker, markerInstances, polyline, polylineInstances, reset, tileLayer, tileLayerInstances };
+  return { divIcon: vi.fn((options: unknown) => options), latLngBounds: vi.fn(() => ({ isValid: () => true })), map, mapInstances, marker, markerInstances, polyline, polylineInstances, reset, tileLayer, tileLayerInstances };
 });
 
 vi.mock("leaflet", () => leaflet);

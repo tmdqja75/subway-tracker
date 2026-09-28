@@ -1472,6 +1472,20 @@ h2 {
   background: #edf4fc;
 }
 
+.completed-journey-map__endpoint {
+  border: 3px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(16 35 63 / 0.4);
+}
+
+.completed-journey-map__endpoint--start {
+  background: #1f8a4c;
+}
+
+.completed-journey-map__endpoint--end {
+  background: #c8322a;
+}
+
 .completed-journey-map__fallback {
   margin: 0;
   color: #526477;

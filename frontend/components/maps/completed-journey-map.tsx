@@ -129,11 +129,17 @@ export function CompletedJourneyMap({ trip, journeyKey }: CompletedJourneyMapPro
             : null;
           resource.routeLayer?.addTo(map);
 
-          const startMarker = leaflet.marker(geometry[0], { alt: "출발지", title: "출발지" }) as unknown as LeafletMarker;
+          // A CSS dot, not Leaflet's default PNG icon: bundling breaks its image path lookup.
+          const endpointIcon = (kind: "start" | "end") => leaflet.divIcon({
+            className: `completed-journey-map__endpoint completed-journey-map__endpoint--${kind}`,
+            iconSize: [16, 16],
+          });
+
+          const startMarker = leaflet.marker(geometry[0], { alt: "출발지", icon: endpointIcon("start"), title: "출발지" }) as unknown as LeafletMarker;
           resource.markers.push(startMarker);
           startMarker.addTo(map);
 
-          const endMarker = leaflet.marker(geometry[geometry.length - 1], { alt: "도착지", title: "도착지" }) as unknown as LeafletMarker;
+          const endMarker = leaflet.marker(geometry[geometry.length - 1], { alt: "도착지", icon: endpointIcon("end"), title: "도착지" }) as unknown as LeafletMarker;
           resource.markers.push(endMarker);
           endMarker.addTo(map);
 
