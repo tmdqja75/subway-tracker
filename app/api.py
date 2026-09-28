@@ -1,5 +1,6 @@
 """REST API consumed by the mobile frontend."""
 
+import asyncio
 import logging
 import time
 
@@ -19,10 +20,15 @@ from .models import (
 from .reitti import ReittiError
 from .stations import normalize_name
 from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
-from .tmap import TmapError, reverse_itinerary, search_routes_with_raw_response
+from .tmap import TmapError, join_itineraries, reverse_itinerary, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+
+class ViaStop(BaseModel):
+    name: str
+    station_id: str | None = None
 
 
 class RouteSearchRequest(BaseModel):
@@ -31,6 +37,12 @@ class RouteSearchRequest(BaseModel):
     # station_id from the autocomplete pick: pins the exact line's coordinates
     start_id: str | None = None
     end_id: str | None = None
+    # ordered 경유역; Tmap has no waypoints, so each hop is its own search
+    vias: list[ViaStop] = []
+
+
+MAX_VIAS = 3
+MAX_JOINED_ROUTES = 10
 
 
 class StartJourneyRequest(BaseModel):
@@ -44,6 +56,59 @@ class BoardRequest(BaseModel):
 
 def _route_cache_key(start, end) -> tuple[str, str, str, str]:
     return (normalize_name(start.name), start.line, normalize_name(end.name), end.line)
+
+
+def _resolve_station(registry, name: str, station_id: str | None):
+    station = (registry.get(station_id) if station_id else None) or registry.find(name)
+    if not station:
+        raise HTTPException(404, f"station not found: {name}")
+    return station
+
+
+async def _search_segment(db, settings, start, end) -> list[Itinerary]:
+    """Cached Tmap search for one start→end hop."""
+    cache_key = _route_cache_key(start, end)
+    cached = db.get_cached_route_options(*cache_key)
+    if cached is not None:
+        log.debug(
+            "route cache hit start=%s/%s end=%s/%s",
+            cache_key[0], cache_key[1], cache_key[2], cache_key[3],
+        )
+        db.touch_cached_route_options(*cache_key)
+        return cached
+    log.info("Tmap poll start=%s end=%s", start.name, end.name)
+    try:
+        route_search = await search_routes_with_raw_response(
+            settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
+        )
+    except TmapError as e:
+        raise HTTPException(502, str(e))
+    if not route_search.itineraries:
+        raise HTTPException(404, f"no routes {start.name} → {end.name}")
+    db.cache_route_options(
+        *cache_key,
+        route_search.itineraries,
+        raw_tmap_response=route_search.raw_response_json,
+    )
+    return route_search.itineraries
+
+
+def _join_segments(segments: list[list[Itinerary]]) -> list[Itinerary]:
+    # ponytail: full cross product per fold is ≤10×10; trimming after each
+    # fold keeps 3 vias at 300 joins instead of 10^4.
+    itineraries = segments[0]
+    for segment in segments[1:]:
+        joined = sorted(
+            (join_itineraries(a, b) for a in itineraries for b in segment),
+            key=lambda it: it.total_time,
+        )
+        distinct: dict[tuple, Itinerary] = {}
+        for it in joined:  # fastest first, so setdefault keeps the fastest
+            distinct.setdefault(
+                tuple((leg.route, leg.start_name, leg.end_name) for leg in it.legs), it
+            )
+        itineraries = list(distinct.values())[:MAX_JOINED_ROUTES]
+    return itineraries
 
 
 async def _fetch_leg_arrivals(settings, leg):
@@ -80,38 +145,26 @@ async def station_search(request: Request, q: str):
 async def routes(request: Request, body: RouteSearchRequest):
     registry = request.app.state.stations
     settings = request.app.state.settings
-    start = (registry.get(body.start_id) if body.start_id else None) or registry.find(body.start)
-    end = (registry.get(body.end_id) if body.end_id else None) or registry.find(body.end)
-    if not start:
-        raise HTTPException(404, f"station not found: {body.start}")
-    if not end:
-        raise HTTPException(404, f"station not found: {body.end}")
     db = request.app.state.manager.db
-    cache_key = _route_cache_key(start, end)
-    cached = db.get_cached_route_options(*cache_key)
-    if cached is not None:
-        log.debug(
-            "route cache hit start=%s/%s end=%s/%s",
-            cache_key[0], cache_key[1], cache_key[2], cache_key[3],
-        )
-        db.touch_cached_route_options(*cache_key)
-        itineraries = cached
-    else:
-        log.info("Tmap poll start=%s end=%s", start.name, end.name)
-        try:
-            route_search = await search_routes_with_raw_response(
-                settings.tmap_app_key, start.lon, start.lat, end.lon, end.lat
-            )
-        except TmapError as e:
-            raise HTTPException(502, str(e))
-        itineraries = route_search.itineraries
-        if not itineraries:
-            raise HTTPException(404, "no subway routes found")
-        db.cache_route_options(
-            *cache_key,
-            itineraries,
-            raw_tmap_response=route_search.raw_response_json,
-        )
+    vias = [via for via in body.vias if via.name.strip()]
+    if len(vias) > MAX_VIAS:
+        raise HTTPException(400, f"at most {MAX_VIAS} via stations")
+    stops = [
+        _resolve_station(registry, body.start, body.start_id),
+        *(_resolve_station(registry, via.name.strip(), via.station_id) for via in vias),
+        _resolve_station(registry, body.end, body.end_id),
+    ]
+    hops = list(zip(stops, stops[1:]))
+    for a, b in hops:
+        if normalize_name(a.name) == normalize_name(b.name):
+            raise HTTPException(400, f"consecutive stops are the same station: {a.name}")
+
+    if vias:
+        segments = await asyncio.gather(*(_search_segment(db, settings, a, b) for a, b in hops))
+        return [it.model_dump() for it in _join_segments(segments)]
+
+    start, end = stops
+    itineraries = await _search_segment(db, settings, start, end)
 
     # A same-route-opposite-direction cache hit is an extra option, never a
     # replacement for the itineraries above — riders should see both.
@@ -120,7 +173,7 @@ async def routes(request: Request, body: RouteSearchRequest):
     if reverse_cached is not None:
         log.debug(
             "route cache hit (reversed, appended) start=%s/%s end=%s/%s",
-            cache_key[0], cache_key[1], cache_key[2], cache_key[3],
+            reverse_key[0], reverse_key[1], reverse_key[2], reverse_key[3],
         )
         db.touch_cached_route_options(*reverse_key)
         itineraries = [*itineraries, *(reverse_itinerary(it) for it in reverse_cached)]
