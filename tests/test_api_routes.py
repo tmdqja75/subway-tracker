@@ -854,7 +854,7 @@ def test_routes_joins_segments_through_one_via_fastest_first(tmp_path, monkeypat
     assert response.status_code == 200
     body = response.json()
     assert [it["total_time"] for it in body] == [1780, 1980, 2200, 2400]
-    assert len(body[0]["legs"]) == 1  # 2호선 ride-through merged
+    assert len(body[0]["legs"]) == 2  # never merged at the via: rider re-boards
     assert body[2]["legs"][1]["mode"] == "BUS"  # bus combos kept
     assert all(it["fare"] is None and it["is_reversed"] is False for it in body)
     assert sorted(calls) == [("강남", "건대입구"), ("건대입구", "잠실")]

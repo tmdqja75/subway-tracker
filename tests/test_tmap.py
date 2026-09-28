@@ -393,27 +393,13 @@ def test_join_itineraries_transfers_at_the_via():
     ]
 
 
-def test_join_itineraries_merges_a_ride_through_the_via_on_the_same_line():
-    a = _trip(_leg("수도권2호선", ["강남", "삼성", "건대입구"], 900))
-    b = _trip(_leg("수도권2호선", ["건대입구", "구의", "잠실"], 480))
+def test_join_itineraries_never_merges_same_route_legs_at_the_via():
+    # 성수 is a 2호선 branch junction: 용답→성수 (성수지선) and 성수→뚝섬 share
+    # the route name, but no single train runs through, so the rider re-boards.
+    a = _trip(_leg("수도권2호선", ["용답", "성수"]))
+    b = _trip(_leg("수도권2호선", ["성수", "뚝섬"]))
 
     joined = join_itineraries(a, b)
 
-    assert len(joined.legs) == 1
-    leg = joined.legs[0]
-    assert [s.name for s in leg.stations] == ["강남", "삼성", "건대입구", "구의", "잠실"]
-    assert [s.index for s in leg.stations] == [0, 1, 2, 3, 4]
-    assert (leg.start_name, leg.end_name) == ("강남", "잠실")
-    assert leg.section_time == 1380
-    assert joined.transfer_count == 0
-    assert joined.summary == ["🚇 수도권2호선: 강남 → 잠실"]
-
-
-def test_join_itineraries_keeps_a_same_line_u_turn_as_two_legs():
-    a = _trip(_leg("수도권2호선", ["성수", "건대입구"]))
-    b = _trip(_leg("수도권2호선", ["건대입구", "성수", "뚝섬"]))
-
-    joined = join_itineraries(a, b)
-
-    assert len(joined.legs) == 2
+    assert [(leg.start_name, leg.end_name) for leg in joined.legs] == [("용답", "성수"), ("성수", "뚝섬")]
     assert joined.transfer_count == 1
