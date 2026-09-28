@@ -51,10 +51,12 @@ def test_static_export_debug_assets_and_api_route_coexist(tmp_path):
     root = client.get("/")
     assert root.status_code == 200
     assert "Next rider app" in root.text
+    assert root.headers["cache-control"] == "no-cache"
 
     next_asset = client.get("/_next/static/app.js")
     assert next_asset.status_code == 200
     assert next_asset.text == "console.log('next')"
+    assert "immutable" in next_asset.headers["cache-control"]
 
     debug = client.get("/debug.html")
     assert debug.status_code == 200

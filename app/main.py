@@ -30,9 +30,25 @@ configure_logging()
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
+class RevalidatingStaticFiles(StaticFiles):
+    """Hashed Next chunks are immutable; everything else (HTML) must revalidate.
+
+    Without Cache-Control, Safari heuristically reuses a stale index.html that
+    still points at the previous deploy's chunks.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path.startswith("_next/static/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def mount_static(app: FastAPI, static_dir: Path = STATIC_DIR) -> None:
     """Mount the static export after API routes so /api always has priority."""
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/", RevalidatingStaticFiles(directory=static_dir, html=True), name="static")
 
 
 @asynccontextmanager
