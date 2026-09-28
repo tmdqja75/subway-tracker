@@ -186,7 +186,8 @@ unresolvable station pairs are skipped safely.
 ## Via-station search
 
 `POST /api/routes` accepts `vias: [{name, station_id?}]` (≤3 non-blank, else
-400; consecutive identical stops → 400). Each hop goes through
+400; consecutive identical stops → 400). Each hop goes, one at a time (Tmap
+returns HTTP 429 on concurrent bursts), through
 `api._search_segment` (the shared cache-or-Tmap path, so hops land in
 `route_options_cache` and in Recent Route history). `api._join_segments` folds
 hops with `tmap.join_itineraries`, dedupes by `(route, start, end)` leg

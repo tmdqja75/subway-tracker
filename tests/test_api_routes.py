@@ -979,3 +979,30 @@ def test_routes_via_404_when_tmap_finds_no_route_for_a_short_hop(tmp_path, monke
 
     assert response.status_code == 404
     assert response.json()["detail"] == "강남 → 건대입구 구간 경로를 찾지 못했어요."
+
+
+def test_routes_via_fetches_segments_one_at_a_time(tmp_path, monkeypatch):
+    # Tmap throttles bursts (HTTP 429), so hops must not be fetched concurrently.
+    import asyncio
+
+    client, _, _ = make_via_client(tmp_path, monkeypatch, {})
+    in_flight = 0
+    peak = 0
+
+    async def fake_search(app_key, start_lon, start_lat, end_lon, end_lat):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        a, b = NAME_BY_LAT[start_lat], NAME_BY_LAT[end_lat]
+        return TmapRouteSearchResult(itineraries=[via_trip(f"{a}-{b}", a, b, 100)], raw_response_json="{}")
+
+    monkeypatch.setattr("app.api.search_routes_with_raw_response", fake_search)
+
+    response = client.post("/api/routes", json={
+        "start": "강남", "end": "사당", "vias": [{"name": "건대입구"}, {"name": "잠실"}],
+    })
+
+    assert response.status_code == 200
+    assert peak == 1

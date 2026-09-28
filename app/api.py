@@ -1,6 +1,5 @@
 """REST API consumed by the mobile frontend."""
 
-import asyncio
 import logging
 import time
 
@@ -162,7 +161,8 @@ async def routes(request: Request, body: RouteSearchRequest):
             raise HTTPException(400, f"같은 역이 연달아 있어요: {a.name}")
 
     if vias:
-        segments = await asyncio.gather(*(_search_segment(db, settings, a, b) for a, b in hops))
+        # sequential on purpose: Tmap answers concurrent bursts with HTTP 429
+        segments = [await _search_segment(db, settings, a, b) for a, b in hops]
         return [it.model_dump() for it in _join_segments(segments)]
 
     start, end = stops

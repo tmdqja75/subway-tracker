@@ -52,7 +52,8 @@ rider force the route through up to three ordered via stations (경유역).
   opposite-direction cache hits.
 - **With vias:**
   1. Split into segments `start→V1, V1→V2, …, Vk→end`.
-  2. Fetch all segments concurrently through one shared cache-or-Tmap helper
+  2. Fetch segments one at a time (Tmap answers concurrent bursts with HTTP
+     429) through one shared cache-or-Tmap helper
      (the current `/routes` cache logic, extracted). Each segment is cached
      under its own key, exactly like a normal search.
   3. Fold segments left to right: combine every itinerary so far with every
