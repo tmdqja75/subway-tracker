@@ -14,7 +14,7 @@ import httpx
 from .models import TrackPoint
 
 ACC_REAL = 50  # station-anchored points
-ACC_ESTIMATED = 150  # interpolated / time-based points
+ACC_ESTIMATED = 100  # interpolated / time-based points; matches Reitti's default anomaly threshold
 
 
 class ReittiError(Exception):

@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 import respx
@@ -9,7 +11,7 @@ from app.reitti import ReittiError, commit_workbench_patch, push_points
 
 @respx.mock
 async def test_push_points_reports_each_successful_transfer():
-    respx.post("http://reitti.test/api/v1/ingest/owntracks").mock(
+    route = respx.post("http://reitti.test/api/v1/ingest/owntracks").mock(
         side_effect=[Response(204), Response(200)]
     )
     progress = []
@@ -29,6 +31,7 @@ async def test_push_points_reports_each_successful_transfer():
 
     assert sent == 2
     assert progress == [1, 2]
+    assert [json.loads(call.request.content)["acc"] for call in route.calls] == [50, 100]
 
 
 @respx.mock

@@ -611,7 +611,8 @@ class JourneyManager:
             self.settings.reitti_token,
             self.settings.reitti_device_id,
             points[0].ts * 1000,
-            points[-1].ts * 1000,
+            # Reitti's Workbench range is end-exclusive; include the final point.
+            (points[-1].ts + 1) * 1000,
         )
 
     async def retry_debug_push(self, journey_id: int) -> None:

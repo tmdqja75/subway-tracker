@@ -254,7 +254,7 @@ async def test_commit_to_timeline_sends_the_journey_time_range(manager, monkeypa
 
     await manager.commit_to_timeline()
 
-    assert calls == [("http://reitti.test", "t", manager.settings.reitti_device_id, 1000, 2000)]
+    assert calls == [("http://reitti.test", "t", manager.settings.reitti_device_id, 1000, 3000)]
 
 
 async def test_commit_to_timeline_requires_a_completed_journey(manager, monkeypatch):
