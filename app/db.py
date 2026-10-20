@@ -450,6 +450,12 @@ class Database:
         )
         self.conn.commit()
 
+    def delete_points(self, journey_id: int, leg_idx: int) -> None:
+        self.conn.execute(
+            "DELETE FROM points WHERE journey_id = ? AND leg_idx = ?", (journey_id, leg_idx)
+        )
+        self.conn.commit()
+
     def get_points(self, journey_id: int, leg_idx: int | None = None) -> list[TrackPoint]:
         if leg_idx is None:
             query = "SELECT lat, lon, ts, estimated FROM points WHERE journey_id = ? ORDER BY ts"

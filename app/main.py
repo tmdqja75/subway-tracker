@@ -14,10 +14,14 @@ from .observability import configure_observability
 from .stations import StationRegistry
 
 def configure_logging() -> None:
+    level = logging.getLevelNamesMapping()[get_settings().log_level.upper()]
+    # LOG_LEVEL=DEBUG records the tracker's per-poll train decisions (app.*);
+    # dependencies stay at INFO+ so their debug request logs never appear.
     logging.basicConfig(
-        level=get_settings().log_level,
+        level=max(level, logging.INFO),
         format="%(asctime)s %(name)s %(message)s",
     )
+    logging.getLogger("app").setLevel(level)
     # httpx logs full request URLs at INFO, and the Seoul Open API key is part
     # of the URL path. Keep application logs at LOG_LEVEL while preventing API
     # keys from being shipped to Loki through dependency request logs.

@@ -348,6 +348,42 @@ async def test_debug_retry_push_completes_a_cancelled_journey_without_points(man
     assert manager.db.get_journey(journey_id)["state"] == JourneyState.COMPLETED
 
 
+async def test_alight_far_ahead_of_tracked_train_rebuilds_leg_on_schedule(manager, monkeypatch):
+    async def fake_push(url, token, points, *, on_progress=None):
+        return len(points)
+
+    class FakeTime:
+        _t = 1_000_000.0
+
+        @staticmethod
+        def time():
+            return FakeTime._t
+
+    monkeypatch.setattr(journey_mod, "push_points", fake_push)
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+
+    j = await manager.start_journey(make_itinerary())
+    await manager.board("3001")
+    manager._stop_tracker()
+    # the tracked (wrong) train is still at the origin when the rider alights
+    # 30 minutes later; its last live point sits 5s before the alight press
+    FakeTime._t += 1800
+    manager._emit_at(j, 37.4837, 127.0354, int(FakeTime._t) - 5, estimated=False)
+    j.last_arrival_time = FakeTime._t - 5
+
+    await manager.alight()
+    await manager._push_task
+
+    points = manager.db.get_points(j.id)
+    assert (points[0].ts, points[0].lat, points[0].estimated) == (1_000_000, 37.4837, False)
+    assert (points[-1].ts, points[-1].lat, points[-1].estimated) == (1_001_800, 37.4909, False)
+    # the middle station is passed halfway through, not squeezed into the last seconds
+    middle = [p.ts for p in points if p.lat == 37.4870]
+    assert middle and all(1_000_800 < ts < 1_001_000 for ts in middle)
+    # the stale live point from the trailing train is gone
+    assert not any(p.ts == 1_001_795 for p in points)
+
+
 async def test_final_alight_starts_background_push_and_exposes_live_progress(manager, monkeypatch):
     first_point_sent = asyncio.Event()
     finish_push = asyncio.Event()
