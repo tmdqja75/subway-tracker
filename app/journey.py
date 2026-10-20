@@ -33,6 +33,9 @@ CRUISE_POLL_SECONDS = 30
 MISSING_TRAIN_RETRY_SECONDS = 10
 LOST_TRAIN_FALLBACK_SECONDS = 90
 MAX_SEGMENT_FRACTION = 0.92  # never claim arrival from interpolation alone
+# Leaving the leg with >= 2 unlogged stations in under this share of their
+# scheduled time means the tracked train was not the rider's (e.g. a later one).
+BEHIND_SCHEDULE_FRACTION = 0.5
 DEFAULT_SEGMENT_SECONDS = 120
 TRANSFER_FAILURE_MESSAGES = {
     "configuration": "Reitti 서버 설정이 완료되지 않았어요. 서버 주소와 토큰을 확인하세요.",
@@ -944,6 +947,40 @@ class JourneyManager:
         j.logged_idx = to_idx
         j.last_arrival_time = now
 
+    def _rebuild_if_train_fell_behind(self, j: ActiveJourney, now: float) -> bool:
+        """Replace a leg whose tracked train trailed the rider with a schedule-shaped one.
+
+        Squeezing many unlogged stations into the few seconds before an alight
+        draws a straight jump across the map. When the remaining stations are
+        clearly infeasible in the time left, the leg's live history came from
+        the wrong train: redraw the whole leg between the board and alight
+        presses, spread evenly over its stations like an onboard start.
+        """
+        last = len(j.leg.stations) - 1
+        remaining = last - j.logged_idx
+        span = now - (j.last_arrival_time or now)
+        started_at = float(j.leg_started_at or now)
+        min_share = self._segment_seconds(j) * BEHIND_SCHEDULE_FRACTION
+        # only the tail is infeasible: the board-to-alight window itself must fit
+        # the schedule, or there is no better timing to rebuild from
+        if remaining < 2 or span >= remaining * min_share or now - started_at < last * min_share:
+            return False
+        log.warning(
+            "journey %s leg %s: train %s still %d stations short at leg end (%.0fs since last); "
+            "rebuilding leg on schedule from %d",
+            j.id, j.leg_idx, j.train_no, remaining, span, started_at,
+        )
+        self.db.delete_points(j.id, j.leg_idx)
+        budget = max(now - started_at, 1.0) / last
+        dwell = min(30, budget * 0.25)
+        self._reconstruct_history(j, started_at, last, budget, dwell, budget - dwell)
+        start = j.leg.stations[0]
+        # the board press is an observation, not an estimate
+        self._emit_at(j, start.lat, start.lon, int(started_at), estimated=False)
+        j.logged_idx = last
+        j.last_arrival_time = now
+        return True
+
     def _log_transfer_walk(self, j: ActiveJourney, prev_leg_idx: int, now: float) -> None:
         """Write the Tmap WALK linestring between two subway legs."""
         prev_leg = j.itinerary.legs[prev_leg_idx]
@@ -1060,7 +1097,9 @@ class JourneyManager:
             return
         # write any path not yet logged (arrival poll for the end station may
         # have been missed), then pin the final point at the alight station
-        self._log_segment(j, len(j.leg.stations) - 1, time.time())
+        now = time.time()
+        if not self._rebuild_if_train_fell_behind(j, now):
+            self._log_segment(j, len(j.leg.stations) - 1, now)
         end = j.leg.stations[-1]
         self._emit(j, end.lat, end.lon, estimated=False)
         self._stop_tracker()
