@@ -458,22 +458,21 @@ class JourneyManager:
             # It may be in the final segment, but never beyond the alight stop.
             if not 0 < candidate.station_index <= last_idx:
                 raise ValueError("onboard train is outside the active leg")
-            active_location = candidate.station_index - 0.5
         elif candidate.status == "departed":
             # A departure observed at the rider's origin is already underway,
             # while a departure at the alight station is not a usable ride.
             if not 0 <= candidate.station_index < last_idx:
                 raise ValueError("onboard train is outside the active leg")
-            active_location = float(candidate.station_index)
         else:
             # Arrivals and approaches at an endpoint remain board/alight states,
             # not an already-onboard interior candidate.
             if not 0 < candidate.station_index < last_idx:
                 raise ValueError("onboard train is outside the active leg")
-            active_location = float(candidate.station_index)
-        terminus = normalize_name(candidate.terminus)
-        if terminus not in names or names.index(terminus) <= active_location:
-            raise ValueError("onboard train direction does not match the active leg")
+        # Direction is not inferred from candidate.terminus: a train's terminus
+        # usually lies beyond the leg, and on Line 2 most loop trains are bound
+        # for 성수, which can sit behind the train. fetch_onboard_candidates
+        # takes trains from the leg direction's up/dn list (matches_direction),
+        # and /board re-fetches candidates server-side before calling this.
 
     def _reconstruction_timing(self, j: ActiveJourney) -> tuple[float, float, float]:
         station_count = len(j.leg.stations)
