@@ -1109,6 +1109,48 @@ async def test_onboard_later_leg_retains_transfer_walk_before_reconstructed_hist
     )
 
 
+def _line2_itinerary() -> Itinerary:
+    names = ["성수", "건대입구", "구의", "강변"]
+    stations = [LegStation(index=i, name=n, lat=37.54 + i * 0.001, lon=127.05 + i * 0.01) for i, n in enumerate(names)]
+    leg = SubwayLeg(
+        route="수도권2호선", line_key="2호선", section_time=360,
+        start_name="성수", end_name="강변", stations=stations, shape=[],
+    )
+    return Itinerary(
+        total_time=360, transfer_count=0, total_walk_time=0, fare=1400,
+        legs=[leg], summary=["🚇 수도권2호선: 성수 → 강변"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("itinerary", "line", "terminus", "station_index", "station_name"),
+    [
+        # Line 3: the train runs past the rider's stop to its own terminus.
+        (make_itinerary, "3호선", "오금", 0, "양재"),
+        # Line 2 loop: 성수-bound trains pass 성수 and come back a lap later.
+        (_line2_itinerary, "2호선", "성수", 1, "건대입구"),
+        (_line2_itinerary, "2호선", "외선순환", 0, "성수"),
+    ],
+)
+async def test_onboard_tracking_accepts_train_whose_terminus_is_beyond_or_behind_the_leg(
+    manager, monkeypatch, itinerary, line, terminus, station_index, station_name,
+):
+    """Direction comes from the feed's up/dn list, not from the train's terminus."""
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(itinerary())
+
+    await manager.begin_realtime_tracking_from_onboard(
+        OnboardTrain(
+            train_no="2001", line_name=line, terminus=terminus,
+            direction_label=f"{terminus}행", station_name=station_name, station_index=station_index,
+            status="departed", observed_at=1_000_000, matches_direction=True,
+            is_express=False,
+        )
+    )
+
+    assert journey.state == JourneyState.ON_TRAIN
+
+
 @pytest.mark.parametrize(
     ("status", "station_index", "station_name"),
     [

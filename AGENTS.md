@@ -145,12 +145,14 @@ background `_track_loop` polls until leg end -> `_complete_leg` -> next leg's
 
 For a rider who opens the app after boarding, the covered-leg picker may also
 offer a train from `realtimePosition` that is already between the leg origin
-and destination. It must still match direction using normalized station names,
-and selection is revalidated against a fresh position response before state
-changes. Seoul exposes a current station-relative observation, not historical
-stop events: reconstruct the origin-to-current geometry from scheduled segment
-time, mark every backfilled point estimated, and make the subsequent live
-anchor authoritative. Never present the reconstructed station pauses as actual
+and destination. Direction comes from the feed's up/dn list for the leg
+(`_train_bucket`), never from the train's terminus: termini usually lie beyond
+the leg, and Line 2 loop trains are mostly bound for 성수. Selection is
+revalidated against a fresh position response before state changes. Seoul
+exposes a current station-relative observation, not historical stop events:
+reconstruct the origin-to-current geometry from scheduled segment time, mark
+every backfilled point estimated, and make the subsequent live anchor
+authoritative. Never present the reconstructed station pauses as actual
 provider timestamps.
 
 Two tracking modes per leg, chosen in `board()`:
