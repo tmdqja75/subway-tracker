@@ -44,7 +44,9 @@ app/
   journey.py   state machine + background tracking loop (the core logic)
   db.py        sqlite3 persistence, sync, short transactions
   models.py    pydantic models shared by api/journey/db
-  seoul.py     Seoul realtime position/arrival API client + key rotation
+  subway_feed.py  self-hosted line-snapshot feed client (SUBWAY_API_URL) + pure
+               derivations: arrivals, onboard candidates, boarding context, locate_train
+  platform_history.py  recorded platform snapshots -> per-station train event times
   tmap.py      Tmap transit route search client, itinerary parsing
   stations.py  station CSV registry, name normalization/autocomplete
   lines.py     Tmap route name <-> Seoul line-name/subwayId mapping
@@ -143,21 +145,37 @@ Per leg: `AWAITING_BOARD` -> user picks train -> `board()` -> `ON_TRAIN` ->
 background `_track_loop` polls until leg end -> `_complete_leg` -> next leg's
 `AWAITING_BOARD` or `_push_to_reitti` on the last leg.
 
+While a covered leg (`LINE_KEY_TO_API_ID`) is `AWAITING_BOARD`,
+`_platform_watch_loop` fetches the whole line every `PLATFORM_POLL_SECONDS`
+(15 s, stopping after `PLATFORM_WATCH_MAX_SECONDS`) into the in-memory
+`ActiveJourney.platform_snapshots` deque as `(server receive time, snapshot)`;
+the feed itself carries no per-train timestamp. It starts on journey start,
+transfer, missed train and resume, and stops on board/cancel. `/arrivals`
+(max age `ARRIVALS_SNAPSHOT_MAX_AGE`) and `/board` revalidation (max age 0)
+read through `JourneyManager.leg_snapshot()`, which serializes feed requests
+and appends to the buffer — one feed request per picker refresh at most. The
+buffer is cleared on boarding and is lost on restart.
+
 For a rider who opens the app after boarding, the covered-leg picker may also
 offer a train from `realtimePosition` that is already between the leg origin
 and destination. Direction comes from the feed's up/dn list for the leg
 (`_train_bucket`), never from the train's terminus: termini usually lie beyond
 the leg, and Line 2 loop trains are mostly bound for 성수. Selection is
 revalidated against a fresh position response before state changes. Seoul
-exposes a current station-relative observation, not historical stop events:
-reconstruct the origin-to-current geometry from scheduled segment time, mark
-every backfilled point estimated, and make the subsequent live anchor
-authoritative. Never present the reconstructed station pauses as actual
-provider timestamps.
+exposes a current station-relative observation, not historical stop events.
+`platform_history.infer_station_events` places each past station's arrival and
+departure at the midpoint of the two buffered snapshots where the train's
+status flipped (bracket ≤ `MAX_BRACKET_SECONDS`, latest run of the train
+number only, no inference on express legs that skip stations); unknown events
+fall back to scheduled segment time shifted to the nearest known event
+(`merge_event_times`). The train's current station is never inferred — it stays
+pinned to the observation, which `_restore_leg_progress` relies on. Mark every
+backfilled point estimated, and make the subsequent live anchor authoritative.
+Never present the reconstructed station pauses as actual provider timestamps.
 
 Two tracking modes per leg, chosen in `board()`:
 - **realtime**: line has a `line_key` (see `lines.py`) and user picked a
-  train number. Poll `seoul.fetch_positions`, match by `trainNo`, interpolate
+  train number. Poll `subway_feed.locate_train`, match by train number, interpolate
   lat/lon between stations by elapsed time. Polling cadence is adaptive
   (`_next_poll_delay`): fast near station events, slows to ~30s cruising.
   Train missing from feed >90s -> falls back to timer mode.
@@ -208,12 +226,12 @@ reversed cache hits.
 | Client | Notes |
 |---|---|
 | `tmap.py` | POST `transit/routes`, needs `appKey` header. Parses `passShape.linestring` ("lon,lat lon,lat...") into `[lat,lon]` shape points. Errors surface via `result.message`, not HTTP status. Transit API has no waypoint parameter; `count` is omitted so Tmap's default/max of 10 applies. |
-| `seoul.py` | Two endpoints share one key: `realtimePosition` (poll boarded train), `realtimeStationArrival` (arrivals picker). Key rotation on 429/rate-limit error codes (`ERROR-337`) via `SEOUL_API_KEY_TWO`. Top-level error shapes vary — see `_check()`. `realtimeStationArrival` is inconsistent about parenthetical station-name suffixes (unlike `realtimePosition`, which always matches normalized names): some stations only match `normalize_name()`'s stripped form, others (e.g. `광나루` → only `광나루(장신대)` works) only match the CSV's full display name. `fetch_arrivals()` takes an `alt_station_name` fallback, retried once when the normalized query returns no results; `api._fetch_leg_arrivals()` supplies it from `StationRegistry.find()`. |
-| `stations.py` | CSV-based, `normalize_name()` strips parens/whitespace/trailing 역 to reconcile name spelling differences across Tmap/CSV/Seoul APIs — use this whenever comparing station names across sources. It is not a safe *query* string for `realtimeStationArrival` (see `seoul.py` row above); it is fine for `realtimePosition` matching and everywhere else. |
+| `subway_feed.py` | GET `{SUBWAY_API_URL}/subway/seoul?lineId=` on the self-hosted feed (`~/Documents/server/subway`), which makes one live Seoul `realtimePosition` call per request — no caching there. Returns every station in line order with `up`/`dn` train lists (`status` 접근/도착/출발, `no`, `dest`). Line 2's up/dn labels are inverted relative to snapshot order (`_train_bucket`); 2/6호선 loop wraps live in `_LOOP_WRAP`. `fetch_line_snapshot` retries once on truncated JSON. |
+| `stations.py` | CSV-based, `normalize_name()` strips parens/whitespace/trailing 역 to reconcile name spelling differences across Tmap/CSV/Seoul APIs — use this whenever comparing station names across sources. Snapshot matching in `subway_feed.py` goes through it. |
 | `reitti.py` | One OwnTracks point per HTTP request, 3 retries w/ backoff, dedup is server-side by timestamp so re-pushing all points on retry is fine. |
 
 `docs/api-samples/*.json` are real recorded responses — check these before
-guessing a field name or shape when touching `tmap.py`/`seoul.py`.
+guessing a field name or shape when touching `tmap.py`.
 
 ## Gotchas
 
@@ -222,11 +240,11 @@ guessing a field name or shape when touching `tmap.py`/`seoul.py`.
   leg has realtime coverage.
 - Station name matching must always go through `normalize_name()` — raw
   string equality across Tmap/Seoul/CSV names will silently fail to match.
-  Exception: `seoul.fetch_arrivals()`'s *query string* to Seoul's
-  `realtimeStationArrival` — some stations only accept the normalized/stripped
-  form, others only accept the CSV's full parenthetical name. Always pass
-  `alt_station_name` (from `StationRegistry`) rather than assuming
-  `normalize_name()` alone is a safe query for that one endpoint.
+- Tests: the `manager` fixture in `tests/test_journey.py` disables platform
+  polling; use `live_manager` for polling tests. `tests/conftest.py`'s autouse
+  `no_live_subway_feed` keeps platform polling off the network in every test —
+  never remove it or point test `Settings` at a real `SUBWAY_API_URL`, since
+  each feed request is a live Seoul API call.
 - `journey.py` timestamps are unix seconds (`int`); `points` table has a
   unique constraint on `(journey_id, ts)`, so sub-second events collapse —
   this is intentional (Reitti dedups the same way).
