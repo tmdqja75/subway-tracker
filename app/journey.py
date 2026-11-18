@@ -16,6 +16,8 @@ import logging
 import math
 import time
 from collections import deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database
@@ -40,6 +42,7 @@ MAX_SEGMENT_FRACTION = 0.92  # never claim arrival from interpolation alone
 # scheduled time means the tracked train was not the rider's (e.g. a later one).
 BEHIND_SCHEDULE_FRACTION = 0.5
 DEFAULT_SEGMENT_SECONDS = 120
+KST = ZoneInfo("Asia/Seoul")
 # While a covered leg awaits boarding, the line is polled on the server so a
 # rider who picks an already-departed train gets observed station times
 # (app/platform_history.py). The cap stops a forgotten journey from polling
@@ -407,6 +410,7 @@ class JourneyManager:
                 inferred = [events[s][phase] for s in range(idx) for phase in (0, 1)]
                 upper = current_arrival
             merged = merge_event_times(schedule, inferred, upper)
+            self._log_onboard_inference(j, candidate.train_no, schedule, inferred, merged)
             origin_arrival = merged[0]
             arrivals = merged[0::2] + ([current_arrival] if idx else [])
             departures = merged[1::2]
@@ -479,6 +483,29 @@ class JourneyManager:
         )
         self._claim_one_stop_notification(j)
         self._start_tracker()
+
+    def _log_onboard_inference(
+        self, j: ActiveJourney, train_no: str,
+        schedule: list[float], inferred: list[float | None], merged: list[float],
+    ) -> None:
+        """One line comparing the boarding times used against the schedule-only estimate.
+
+        Events alternate arrival/departure from the leg origin. "snapshot" came
+        from platform snapshots, "shifted" is the schedule moved to the nearest
+        snapshot-known event, "schedule" means no snapshot evidence at all.
+        """
+        def clock(ts: float) -> str:
+            return datetime.fromtimestamp(ts, KST).strftime("%H:%M:%S")
+
+        any_known = any(value is not None for value in inferred)
+        parts = []
+        for k, used in enumerate(merged):
+            source = "snapshot" if inferred[k] is not None else ("shifted" if any_known else "schedule")
+            event = "arrival" if k % 2 == 0 else "departure"
+            parts.append(
+                f"{j.leg.stations[k // 2].name} {event} {clock(used)} ({source}; schedule {clock(schedule[k])})"
+            )
+        log.info("journey %s onboard inference train=%s: %s", j.id, train_no, ", ".join(parts))
 
     def _validate_onboard_candidate(self, j: ActiveJourney, candidate: OnboardTrain) -> None:
         """Reject stale/hand-crafted candidates before they can start tracking."""

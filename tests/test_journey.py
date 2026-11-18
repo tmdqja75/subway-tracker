@@ -1765,3 +1765,21 @@ async def test_resumed_snapshot_inferred_arrival_keeps_station_anchor(manager, m
 
     assert resumed.active.anchor_idx == 1
     assert resumed.active.anchor_phase == "station"
+
+
+async def test_onboard_inference_logs_inferred_and_schedule_times(manager, monkeypatch, caplog):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    # recording began after the train reached 양재: arrival falls back, departure is observed
+    journey.platform_snapshots.extend([
+        (1030, _line3_snap("양재", "도착")), (1045, _line3_snap("양재", "출발")),
+    ])
+
+    with caplog.at_level("INFO", logger="app.journey"):
+        await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "arrived", 1075))
+
+    # epoch 955 = 09:15:55 KST (schedule origin), 1037.5 → 09:17:17, 1007.5 → 09:16:47
+    line = next(r.getMessage() for r in caplog.records if "onboard inference" in r.getMessage())
+    assert "train=3001" in line
+    assert "양재 arrival 09:16:47 (shifted; schedule 09:15:55)" in line
+    assert "양재 departure 09:17:17 (snapshot; schedule 09:16:25)" in line
