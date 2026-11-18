@@ -510,3 +510,42 @@ async def test_fetch_onboard_candidates_line_2_uses_the_swapped_up_bucket(monkey
     candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
 
     assert [candidate.train_no for candidate in candidates] == ["line2-onboard"]
+
+
+from app.subway_feed import (
+    _parse_snapshot,
+    arrivals_from_snapshot,
+    boarding_context_from_snapshot,
+    onboard_candidates_from_snapshot,
+)
+
+
+def test_arrivals_from_snapshot_needs_no_network():
+    snapshot = _parse_snapshot(_payload(
+        ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}]),
+        ("B", [], [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}]),
+        ("C", [], []),
+        ("D", [], []),
+    ))
+
+    trains = arrivals_from_snapshot(snapshot, _leg("3호선", "C", "D"))
+
+    assert [t.train_no for t in trains] == ["near", "far"]
+
+
+def test_onboard_candidates_from_snapshot_stamps_given_now():
+    snapshot = _parse_snapshot(_payload(
+        ("A", [], []),
+        ("B", [], [{"status": "도착", "type": "일반", "dest": "C", "no": "x"}]),
+        ("C", [], []),
+    ))
+
+    [candidate] = onboard_candidates_from_snapshot(snapshot, _leg("3호선", "A", "B", "C"), now=1_234.9)
+
+    assert (candidate.train_no, candidate.station_index, candidate.observed_at) == ("x", 1, 1_234)
+
+
+def test_boarding_context_from_snapshot_lists_preceding_stations():
+    snapshot = _parse_snapshot(_payload(("P1", [], []), ("P2", [], []), ("A", [], []), ("B", [], [])))
+
+    assert boarding_context_from_snapshot(snapshot, _leg("3호선", "A", "B")) == ["P1", "P2"]
