@@ -3,12 +3,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Coordinate, JourneyLegSnapshot } from "../../lib/types";
 import { activeJourneySnapshot } from "../../test/fixtures";
-import { LiveJourneyMap, geometryForLiveLeg, headingForLiveTrain, positionForLiveTrain } from "./live-journey-map";
+import {
+  LiveJourneyMap,
+  geometryForLiveLeg,
+  headingForLiveTrain,
+  positionForLiveTrain,
+  traveledPathForLiveTrain,
+} from "./live-journey-map";
 
 const leaflet = vi.hoisted(() => {
   const mapInstances: Array<{ fitBounds: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; setView: ReturnType<typeof vi.fn> }> = [];
   const markerInstances: Array<{ addTo: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn>; setLatLng: ReturnType<typeof vi.fn> }> = [];
-  const polylineInstances: Array<{ addTo: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }> = [];
+  const polylineInstances: Array<{
+    addTo: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    setLatLngs: ReturnType<typeof vi.fn>;
+  }> = [];
   const tileLayerInstances: Array<{ addTo: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }> = [];
   const map = vi.fn();
   const divIcon = vi.fn();
@@ -33,7 +43,7 @@ const leaflet = vi.hoisted(() => {
       return instance;
     });
     polyline.mockReset().mockImplementation(() => {
-      const instance = { addTo: vi.fn(), remove: vi.fn() };
+      const instance = { addTo: vi.fn(), remove: vi.fn(), setLatLngs: vi.fn() };
       polylineInstances.push(instance);
       return instance;
     });
@@ -147,6 +157,34 @@ describe("LiveJourneyMap", () => {
     expect(headingForLiveTrain(leg, at(null, "before_leg", 0))).toBeCloseTo(90, 5);
   });
 
+  it("ends the traveled path at the train icon: moving, stopped, and not located", () => {
+    const leg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
+      ...activeJourneySnapshot.leg,
+      stations: [
+        { index: 0, name: "출발", lat: 0, lon: 0 },
+        { index: 1, name: "정차", lat: 0, lon: 10 },
+        { index: 2, name: "도착", lat: 0, lon: 20 },
+      ],
+      shape: [[0, 0], [5, 5], [0, 10], [5, 15], [0, 20]] as Coordinate[],
+    };
+    const train = (station_index: number | null, status: string, lat: number, lon: number) => ({
+      ...activeJourneySnapshot.train!, station_index, status, lat, lon,
+    });
+
+    // Moving: shape points up to the segment start, then exactly the marker position.
+    // A quarter of the way along station 1 -> 2 lands inside the first shape segment.
+    const moving = train(2, "between", 0, 12.5);
+    expect(traveledPathForLiveTrain(leg, moving)).toEqual([[0, 0], [5, 5], [0, 10], positionForLiveTrain(leg, moving)]);
+    // Stopped at a station: shape up to that station (the marker sits on it).
+    expect(traveledPathForLiveTrain(leg, train(1, "arrived", 0, 10))).toEqual([[0, 0], [5, 5], [0, 10], [0, 10]]);
+    // Not located / before the boarding station.
+    expect(traveledPathForLiveTrain(leg, train(null, "before_leg", 0, 0))).toEqual([]);
+    expect(traveledPathForLiveTrain(leg, null)).toEqual([]);
+    // No shape: falls back to station geometry and still ends at the marker.
+    const noShape = { ...leg, shape: [] };
+    expect(traveledPathForLiveTrain(noShape, train(2, "between", 0, 14))).toEqual([[0, 0], [0, 10], [0, 14]]);
+  });
+
   it("keeps a locally interpolated first-segment train on the curved Tmap path", () => {
     const curvedLeg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
       ...activeJourneySnapshot.leg,
@@ -229,14 +267,40 @@ describe("LiveJourneyMap", () => {
     await waitFor(() => expect(leaflet.map).toHaveBeenCalledTimes(2));
     expect(leaflet.markerInstances[0].remove).toHaveBeenCalledTimes(1);
     expect(leaflet.polylineInstances[0].remove).toHaveBeenCalledTimes(1);
+    expect(leaflet.polylineInstances[1].remove).toHaveBeenCalledTimes(1);
     expect(leaflet.tileLayerInstances[0].remove).toHaveBeenCalledTimes(1);
     expect(leaflet.mapInstances[0].remove).toHaveBeenCalledTimes(1);
 
     unmount();
     expect(leaflet.markerInstances[1].remove).toHaveBeenCalledTimes(1);
-    expect(leaflet.polylineInstances[1].remove).toHaveBeenCalledTimes(1);
+    expect(leaflet.polylineInstances[2].remove).toHaveBeenCalledTimes(1);
+    expect(leaflet.polylineInstances[3].remove).toHaveBeenCalledTimes(1);
     expect(leaflet.tileLayerInstances[1].remove).toHaveBeenCalledTimes(1);
     expect(leaflet.mapInstances[1].remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws a gray full route under a line-colored trace that follows the train and clears when it disappears", async () => {
+    const leg = { ...activeJourneySnapshot.leg, line_key: "2호선" };
+    const { rerender } = render(<LiveJourneyMap journeyLegKey="1:0" leg={leg} train={activeJourneySnapshot.train} />);
+
+    await waitFor(() => expect(leaflet.polyline).toHaveBeenCalledTimes(2));
+    expect(leaflet.polyline).toHaveBeenNthCalledWith(1, leg.shape, expect.objectContaining({ color: "#C9CED4" }));
+    expect(leaflet.polyline).toHaveBeenNthCalledWith(2, [], expect.objectContaining({ color: "#00A84D" }));
+    const trace = leaflet.polylineInstances[1];
+    expect(trace.setLatLngs).toHaveBeenLastCalledWith(traveledPathForLiveTrain(leg, activeJourneySnapshot.train));
+
+    const moved = { ...activeJourneySnapshot.train!, lat: 37.499, lon: 127.03 };
+    rerender(<LiveJourneyMap journeyLegKey="1:0" leg={leg} train={moved} />);
+    await waitFor(() => expect(trace.setLatLngs).toHaveBeenLastCalledWith(traveledPathForLiveTrain(leg, moved)));
+
+    rerender(<LiveJourneyMap journeyLegKey="1:0" leg={leg} train={null} />);
+    await waitFor(() => expect(trace.setLatLngs).toHaveBeenLastCalledWith([]));
+  });
+
+  it("uses the neutral fallback color for an unknown line key", async () => {
+    render(<LiveJourneyMap journeyLegKey="1:0" leg={activeJourneySnapshot.leg} train={activeJourneySnapshot.train} />);
+    await waitFor(() => expect(leaflet.polyline).toHaveBeenCalledTimes(2));
+    expect(leaflet.polyline).toHaveBeenNthCalledWith(2, [], expect.objectContaining({ color: "#5B6570" }));
   });
 
   it("cleans up a partially constructed map after setup fails and can initialize a later valid leg", async () => {
