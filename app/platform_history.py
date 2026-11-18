@@ -23,6 +23,7 @@ from .subway_feed import (
 )
 
 MAX_BRACKET_SECONDS = 45.0
+RUN_RESET_DROP = 3  # progress units per station
 
 _STATUS_STEP = {"접근": 0, "도착": 1, "출발": 2}
 
@@ -101,10 +102,12 @@ def infer_station_events(
         if progress is not None:
             samples.append((fetched_at, progress))
 
-    # A drop in progress means an earlier pass of the same train number: keep the latest run.
+    # A drop of more than one station means an earlier pass of the same train
+    # number: keep the latest run. Smaller dips are feed flicker (e.g. 도착 then
+    # 접근 at one station); event()'s first-crossing rule already absorbs them.
     start = 0
     for k in range(1, len(samples)):
-        if samples[k][1] < samples[k - 1][1]:
+        if samples[k][1] < samples[k - 1][1] - RUN_RESET_DROP:
             start = k
     samples = samples[start:]
 

@@ -130,3 +130,16 @@ def test_merge_event_times_is_strictly_increasing_below_upper():
 
     assert all(b - a >= 1 for a, b in zip(times, times[1:]))
     assert times[-1] <= 44
+
+
+def test_infer_station_events_tolerates_a_one_step_feed_flicker():
+    # 접근 B at 1060 is a flicker after 도착 B: a one-step dip, not an earlier run.
+    history = [
+        (1000, at("O", "접근")), (1015, at("O", "도착")), (1030, at("O", "출발")),
+        (1045, at("B", "도착")), (1060, at("B", "접근")), (1075, at("B", "출발")),
+    ]
+
+    events = infer_station_events(history, LEG, "t")
+
+    assert events[0] == (1007.5, 1022.5)
+    assert events[1] == (1037.5, 1067.5)
