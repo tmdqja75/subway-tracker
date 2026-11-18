@@ -15,14 +15,19 @@ import asyncio
 import logging
 import math
 import time
+from collections import deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import Database
+from .lines import LINE_KEY_TO_API_ID
 from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from .notifications import NotificationSender
+from .platform_history import infer_station_events, merge_event_times
 from .reitti import ReittiError, commit_workbench_patch, push_points
 from .stations import normalize_name
-from .subway_feed import LegTrainStatus, SubwayApiError, locate_train
+from .subway_feed import LegTrainStatus, StationSnapshot, SubwayApiError, fetch_line_snapshot, locate_train
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +42,14 @@ MAX_SEGMENT_FRACTION = 0.92  # never claim arrival from interpolation alone
 # scheduled time means the tracked train was not the rider's (e.g. a later one).
 BEHIND_SCHEDULE_FRACTION = 0.5
 DEFAULT_SEGMENT_SECONDS = 120
+KST = ZoneInfo("Asia/Seoul")
+# While a covered leg awaits boarding, the line is polled on the server so a
+# rider who picks an already-departed train gets observed station times
+# (app/platform_history.py). The cap stops a forgotten journey from polling
+# Seoul forever; picker refreshes still record snapshots after it.
+PLATFORM_POLL_SECONDS = 15
+PLATFORM_WATCH_MAX_SECONDS = 3600
+PLATFORM_BUFFER_MAX = 240  # one hour at PLATFORM_POLL_SECONDS
 TRANSFER_FAILURE_MESSAGES = {
     "configuration": "Reitti 서버 설정이 완료되지 않았어요. 서버 주소와 토큰을 확인하세요.",
     "authentication": "Reitti 인증이 거부됐어요. 서버 토큰을 확인하세요.",
@@ -146,6 +159,11 @@ class ActiveJourney:
         self.logged_idx = 0
         self.last_arrival_time = 0.0
         self.shape_idx: list[int] = []
+        # (server receive time, whole-line snapshot) while this leg awaits
+        # boarding; in memory only, read once by retroactive boarding.
+        self.platform_snapshots: deque[tuple[float, list[StationSnapshot]]] = deque(
+            maxlen=PLATFORM_BUFFER_MAX,
+        )
 
     def prepare_leg(self) -> None:
         """Reset per-leg tracking state and map stations onto the leg shape."""
@@ -186,6 +204,10 @@ class JourneyManager:
         self.active: ActiveJourney | None = None
         self._task: asyncio.Task | None = None
         self._push_task: asyncio.Task | None = None
+        self._platform_task: asyncio.Task | None = None
+        # one feed request at a time: the feed truncates responses under
+        # concurrent load, and a fresh snapshot can be shared instead
+        self._snapshot_lock = asyncio.Lock()
         self._notification_tasks: set[asyncio.Task[None]] = set()
         self._notification_task_keys: set[tuple[int, int]] = set()
 
@@ -222,6 +244,8 @@ class JourneyManager:
             self._start_tracker()
         elif j.state == JourneyState.PUSHING:
             self._start_push(j, resume=True)
+        elif j.state == JourneyState.AWAITING_BOARD:
+            self._start_platform_watch()
         log.info("resumed journey %s in state %s", j.id, j.state)
         self._resume_pending_notification_deliveries()
 
@@ -300,12 +324,15 @@ class JourneyManager:
             await self.cancel()
         journey_id = self.db.create_journey(itinerary, JourneyState.AWAITING_BOARD)
         self.active = ActiveJourney(journey_id, itinerary)
+        self._start_platform_watch()
         return self.active
 
     async def board(self, train_no: str | None) -> None:
         j = self._require_active()
         if j.state != JourneyState.AWAITING_BOARD:
             raise ValueError(f"cannot board in state {j.state}")
+        self._stop_platform_watch()
+        j.platform_snapshots.clear()
         now = time.time()
         if j.leg_idx > 0:
             self._log_transfer_walk(j, j.leg_idx - 1, now)
@@ -345,6 +372,9 @@ class JourneyManager:
         if not isinstance(candidate, OnboardTrain):
             raise ValueError("onboard candidate must be an OnboardTrain")
         self._validate_onboard_candidate(j, candidate)
+        self._stop_platform_watch()
+        snapshots = list(j.platform_snapshots)
+        j.platform_snapshots.clear()
 
         j.train_no = candidate.train_no
         j.tracking_mode = "realtime"
@@ -366,6 +396,25 @@ class JourneyManager:
         else:  # between: station_index is the reported next station
             origin_arrival = observed_at - (idx - 1) * budget - dwell - run / 2
 
+        if candidate.status != "between":
+            # Replace schedule guesses for stations the train already passed
+            # with times bracketed by the platform snapshots. The current
+            # station keeps its observation-based timing: an inferred point
+            # there would make a restart resume an arrived train as departed.
+            current_arrival = observed_at - dwell if candidate.status == "departed" else observed_at
+            events = infer_station_events(snapshots, j.leg, candidate.train_no)
+            if idx == 0:  # departed at the origin: only its arrival is in the past
+                schedule, inferred, upper = [origin_arrival], [events[0][0]], observed_at
+            else:
+                schedule = [origin_arrival + s * budget + phase * dwell for s in range(idx) for phase in (0, 1)]
+                inferred = [events[s][phase] for s in range(idx) for phase in (0, 1)]
+                upper = current_arrival
+            merged = merge_event_times(schedule, inferred, upper)
+            self._log_onboard_inference(j, candidate.train_no, schedule, inferred, merged)
+            origin_arrival = merged[0]
+            arrivals = merged[0::2] + ([current_arrival] if idx else [])
+            departures = merged[1::2]
+
         # An onboard start skips the normal board() path, which is where the
         # preceding transfer's walk is usually recorded.  Finish that walk at
         # the reconstructed origin timestamp so it remains before the inferred
@@ -377,14 +426,14 @@ class JourneyManager:
         if candidate.status == "departed":
             # observed_at is approximate departure from idx; its arrival is
             # retained as an estimated pause before the live departure anchor.
-            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            self._write_history(j, arrivals, departures)
             j.logged_idx = idx
             j.last_arrival_time = observed_at - dwell
             j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "segment", observed_at
             lat, lon = j.leg.stations[idx].lat, j.leg.stations[idx].lon
         elif candidate.status in ("arrived", "approaching"):
             # observed_at is the station arrival for these feed statuses.
-            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            self._write_history(j, arrivals, departures)
             j.logged_idx = idx
             j.last_arrival_time = observed_at
             j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "station", observed_at
@@ -434,6 +483,29 @@ class JourneyManager:
         )
         self._claim_one_stop_notification(j)
         self._start_tracker()
+
+    def _log_onboard_inference(
+        self, j: ActiveJourney, train_no: str,
+        schedule: list[float], inferred: list[float | None], merged: list[float],
+    ) -> None:
+        """One line comparing the boarding times used against the schedule-only estimate.
+
+        Events alternate arrival/departure from the leg origin. "snapshot" came
+        from platform snapshots, "shifted" is the schedule moved to the nearest
+        snapshot-known event, "schedule" means no snapshot evidence at all.
+        """
+        def clock(ts: float) -> str:
+            return datetime.fromtimestamp(ts, KST).strftime("%H:%M:%S")
+
+        any_known = any(value is not None for value in inferred)
+        parts = []
+        for k, used in enumerate(merged):
+            source = "snapshot" if inferred[k] is not None else ("shifted" if any_known else "schedule")
+            event = "arrival" if k % 2 == 0 else "departure"
+            parts.append(
+                f"{j.leg.stations[k // 2].name} {event} {clock(used)} ({source}; schedule {clock(schedule[k])})"
+            )
+        log.info("journey %s onboard inference train=%s: %s", j.id, train_no, ", ".join(parts))
 
     def _validate_onboard_candidate(self, j: ActiveJourney, candidate: OnboardTrain) -> None:
         """Reject stale/hand-crafted candidates before they can start tracking."""
@@ -525,19 +597,11 @@ class JourneyManager:
         partial_segment_fraction: float | None = None,
     ) -> None:
         """Write schedule-derived origin-to-anchor points, all marked estimated."""
-        origin = j.leg.stations[0]
-        self._emit_at(j, origin.lat, origin.lon, int(origin_arrival), estimated=True)
-        for station_idx in range(full_segments):
-            arrived_at = origin_arrival + station_idx * budget
-            departed_at = arrived_at + dwell
-            station = j.leg.stations[station_idx]
-            # Arrival and later departure preserve an explicit station pause.
-            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
-            geometry = self._segment_geometry(j, station_idx)
-            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
-                self._emit_at(
-                    j, point[0], point[1], int(departed_at + run * distance_fraction), estimated=True,
-                )
+        self._write_history(
+            j,
+            [origin_arrival + station_idx * budget for station_idx in range(full_segments + 1)],
+            [origin_arrival + station_idx * budget + dwell for station_idx in range(full_segments)],
+        )
         if partial_segment_fraction is not None:
             station_idx = full_segments
             arrived_at = origin_arrival + station_idx * budget
@@ -549,6 +613,26 @@ class JourneyManager:
                 self._emit_at(
                     j, point[0], point[1],
                     int(departed_at + run * partial_segment_fraction * distance_fraction), estimated=True,
+                )
+
+    def _write_history(self, j: ActiveJourney, arrivals: list[float], departures: list[float]) -> None:
+        """Write origin-to-anchor points from per-station times, all marked estimated.
+
+        `arrivals[s]`/`departures[s]` are station s's times; there is one fewer
+        departure than arrival. Hop geometry is spread by distance along the
+        Tmap shape between a departure and the next arrival.
+        """
+        origin = j.leg.stations[0]
+        self._emit_at(j, origin.lat, origin.lon, int(arrivals[0]), estimated=True)
+        for station_idx, departed_at in enumerate(departures):
+            station = j.leg.stations[station_idx]
+            # Arrival and later departure preserve an explicit station pause.
+            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
+            run = arrivals[station_idx + 1] - departed_at
+            geometry = self._segment_geometry(j, station_idx)
+            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
+                self._emit_at(
+                    j, point[0], point[1], int(departed_at + run * distance_fraction), estimated=True,
                 )
 
     async def alight(self) -> None:
@@ -566,6 +650,7 @@ class JourneyManager:
         j.train_no = None
         j.tracking_mode = None
         self.db.update_journey(j.id, state=j.state, train_no=None, tracking_mode=None)
+        self._start_platform_watch()
 
     async def stop_and_send(self) -> None:
         """Manual override: end the journey mid-leg and push whatever was
@@ -590,6 +675,7 @@ class JourneyManager:
         j = self._require_active()
         self._stop_tracker()
         self._stop_push()
+        self._stop_platform_watch()
         j.state = JourneyState.CANCELLED
         self.db.update_journey(j.id, state=j.state)
         self.active = None
@@ -651,6 +737,55 @@ class JourneyManager:
         # is triggered from within the loop itself)
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
+
+    # -- platform snapshots ---------------------------------------------------
+
+    async def leg_snapshot(self, max_age: float) -> list[StationSnapshot]:
+        """The active leg's whole-line snapshot, at most `max_age` seconds old.
+
+        A fetched snapshot is buffered on the journey while its leg still
+        awaits boarding; `max_age=0` always fetches.
+        """
+        j = self._require_active()
+        line_id = LINE_KEY_TO_API_ID.get(j.leg.line_key or "")
+        if line_id is None:
+            raise ValueError("active leg has no realtime feed")
+        leg_idx = j.leg_idx
+        async with self._snapshot_lock:
+            if j.platform_snapshots and time.time() - j.platform_snapshots[-1][0] < max_age:
+                return j.platform_snapshots[-1][1]
+            snapshot = await fetch_line_snapshot(self.settings.subway_api_url, line_id)
+            # the journey may have been boarded, cancelled or replaced meanwhile
+            if self.active is j and j.leg_idx == leg_idx and j.state == JourneyState.AWAITING_BOARD:
+                j.platform_snapshots.append((time.time(), snapshot))
+            return snapshot
+
+    def _start_platform_watch(self) -> None:
+        self._stop_platform_watch()
+        j = self.active
+        if j is None or j.state != JourneyState.AWAITING_BOARD or j.leg.line_key not in LINE_KEY_TO_API_ID:
+            return
+        self._platform_task = asyncio.create_task(self._platform_watch_loop(j, j.leg_idx))
+
+    def _stop_platform_watch(self) -> None:
+        task, self._platform_task = self._platform_task, None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _platform_watch_loop(self, j: ActiveJourney, leg_idx: int) -> None:
+        # time.time(), not monotonic: tests replace this module's `time`
+        deadline = time.time() + PLATFORM_WATCH_MAX_SECONDS
+        while (
+            self.active is j
+            and j.leg_idx == leg_idx
+            and j.state == JourneyState.AWAITING_BOARD
+            and time.time() < deadline
+        ):
+            try:
+                await self.leg_snapshot(max_age=PLATFORM_POLL_SECONDS)
+            except SubwayApiError as e:
+                log.warning("platform snapshot poll failed journey=%s leg=%s: %s", j.id, leg_idx, e)
+            await asyncio.sleep(PLATFORM_POLL_SECONDS)
 
     def _stop_push(self) -> None:
         task, self._push_task = self._push_task, None
@@ -1116,6 +1251,7 @@ class JourneyManager:
             train_no=None, tracking_mode=None,
         )
         log.info("journey %s: transfer, now awaiting leg %s", j.id, j.leg_idx)
+        self._start_platform_watch()
 
     def _start_push(self, j: ActiveJourney, *, resume: bool = False) -> None:
         if self._push_task and not self._push_task.done():

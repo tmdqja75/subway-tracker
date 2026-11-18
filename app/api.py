@@ -18,7 +18,12 @@ from .models import (
 )
 from .reitti import ReittiError
 from .stations import normalize_name
-from .subway_feed import SubwayApiError, fetch_arrivals, fetch_boarding_context, fetch_onboard_candidates
+from .subway_feed import (
+    SubwayApiError,
+    arrivals_from_snapshot,
+    boarding_context_from_snapshot,
+    onboard_candidates_from_snapshot,
+)
 from .tmap import TmapError, TmapNoRouteError, join_itineraries, reverse_itinerary, search_routes_with_raw_response
 
 log = logging.getLogger(__name__)
@@ -125,28 +130,19 @@ def _join_segments(segments: list[list[Itinerary]]) -> list[Itinerary]:
     return itineraries
 
 
-async def _fetch_leg_arrivals(settings, leg):
-    """Return trains that are still boardable for the given subway leg."""
+# The picker refreshes every 15 s; the server's own platform polling usually
+# leaves a snapshot this fresh, so most refreshes cost no feed request.
+ARRIVALS_SNAPSHOT_MAX_AGE = 10
+
+
+async def _leg_snapshot(manager, max_age: float):
+    """The active leg's line snapshot via the journey manager (one shared fetch path)."""
     try:
-        return await fetch_arrivals(settings.subway_api_url, leg)
+        return await manager.leg_snapshot(max_age=max_age)
     except SubwayApiError as e:
         raise HTTPException(502, str(e))
-
-
-async def _fetch_leg_onboard(settings, leg):
-    """Return already-onboard candidates for a covered subway leg."""
-    try:
-        return await fetch_onboard_candidates(settings.subway_api_url, leg, now=time.time())
-    except SubwayApiError as e:
-        raise HTTPException(502, str(e))
-
-
-async def _fetch_leg_context(settings, leg):
-    """Return station names before the boarding station, for the boarding-line diagram."""
-    try:
-        return await fetch_boarding_context(settings.subway_api_url, leg)
-    except SubwayApiError as e:
-        raise HTTPException(502, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @router.get("/stations/search")
@@ -266,7 +262,6 @@ async def current_journey(request: Request):
 async def arrivals(request: Request):
     """Closest trains approaching the current leg's boarding station."""
     manager = request.app.state.manager
-    settings = request.app.state.settings
     j = manager.active
     if not j:
         raise HTTPException(404, "no active journey")
@@ -274,30 +269,16 @@ async def arrivals(request: Request):
     if not leg.line_key:
         return {"covered": False, "trains": [], "already_onboard": [], "context_before": []}
     log.info("subway api poll line=%s station=%s", leg.line_key, leg.start_name)
-    trains = await _fetch_leg_arrivals(settings, leg)
-    try:
-        already_onboard = await _fetch_leg_onboard(settings, leg)
-    except HTTPException as error:
-        log.warning(
-            "optional onboard-candidate lookup failed; returning arrivals without "
-            "onboard candidates line=%s station=%s status=%s",
-            leg.line_key, leg.start_name, error.status_code,
-        )
-        already_onboard = []
-    try:
-        context_before = await _fetch_leg_context(settings, leg)
-    except HTTPException as error:
-        log.warning(
-            "optional boarding-context lookup failed; returning arrivals without "
-            "context stations line=%s station=%s status=%s",
-            leg.line_key, leg.start_name, error.status_code,
-        )
-        context_before = []
+    # one snapshot serves all three lists
+    snapshot = await _leg_snapshot(manager, ARRIVALS_SNAPSHOT_MAX_AGE)
     return {
         "covered": True,
-        "trains": [train.model_dump() for train in trains],
-        "already_onboard": [train.model_dump() for train in already_onboard],
-        "context_before": context_before,
+        "trains": [train.model_dump() for train in arrivals_from_snapshot(snapshot, leg)],
+        "already_onboard": [
+            train.model_dump()
+            for train in onboard_candidates_from_snapshot(snapshot, leg, now=time.time())
+        ],
+        "context_before": boarding_context_from_snapshot(snapshot, leg),
     }
 
 
@@ -310,7 +291,8 @@ async def board(request: Request, body: BoardRequest):
             raise HTTPException(409, "retroactive board requires an onboard train")
         if not j or not j.leg.line_key:
             raise HTTPException(409, "retroactive boarding is unavailable for this leg")
-        candidates = await _fetch_leg_onboard(request.app.state.settings, j.leg)
+        snapshot = await _leg_snapshot(manager, 0)
+        candidates = onboard_candidates_from_snapshot(snapshot, j.leg, now=time.time())
         candidate = next((c for c in candidates if c.train_no == body.train_no), None)
         if candidate is None:
             raise HTTPException(409, "selected train is no longer travelling this leg")
@@ -320,7 +302,7 @@ async def board(request: Request, body: BoardRequest):
             raise HTTPException(409, str(e))
         return {"ok": True}
     if body.train_no and j and j.leg.line_key:
-        trains = await _fetch_leg_arrivals(request.app.state.settings, j.leg)
+        trains = arrivals_from_snapshot(await _leg_snapshot(manager, 0), j.leg)
         if body.train_no not in {train.train_no for train in trains}:
             raise HTTPException(409, "selected train is no longer approaching this platform")
     try:

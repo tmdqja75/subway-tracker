@@ -12,7 +12,7 @@ from app.db import Database
 from app.journey import ActiveJourney, JourneyManager, is_one_stop_remaining
 from app.models import Itinerary, JourneyState, LegStation, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
-from app.subway_feed import LegTrainStatus
+from app.subway_feed import LegTrainStatus, StationSnapshot, SubwayApiError, TrainEntry
 
 
 def make_itinerary(shape: list | None = None) -> Itinerary:
@@ -66,15 +66,203 @@ def test_history_estimated_column_migrates_existing_journeys(tmp_path: Path):
     assert migrated["history_estimated"] == 0
 
 
-@pytest.fixture
-def manager(tmp_path: Path, monkeypatch):
-    settings = Settings(
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
         subway_api_url="http://subway.test", tmap_app_key="k",
         reitti_url="http://reitti.test", reitti_token="t",
         poll_interval_seconds=0, db_path=tmp_path / "t.db",
         _env_file=None,
     )
-    return JourneyManager(Database(settings.db_path), settings)
+
+
+@pytest.fixture
+def manager(tmp_path: Path, monkeypatch):
+    manager = JourneyManager(Database(tmp_path / "t.db"), _settings(tmp_path))
+    # Platform polling has its own tests (live_manager); keep the rest quiet.
+    monkeypatch.setattr(manager, "_start_platform_watch", lambda: None)
+    return manager
+
+
+def _line3_snap(train_at: str | None = None, status: str = "") -> list[StationSnapshot]:
+    """양재 → 매봉 → 도곡 line snapshot; train 3001 (dn bucket) at `train_at`."""
+    return [
+        StationSnapshot(
+            name=name, up=[],
+            dn=[TrainEntry(status=status, kind="일반", dest="도곡", no="3001")] if name == train_at else [],
+        )
+        for name in ("양재", "매봉", "도곡")
+    ]
+
+
+@pytest.fixture
+async def live_manager(tmp_path: Path, monkeypatch):
+    manager = JourneyManager(Database(tmp_path / "t.db"), _settings(tmp_path))
+    manager.fetch_count = 0
+
+    async def fake_fetch_line_snapshot(base_url, line_id):
+        manager.fetch_count += 1
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", fake_fetch_line_snapshot)
+    monkeypatch.setattr(journey_mod, "PLATFORM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    yield manager
+    manager._stop_platform_watch()
+
+
+def _uncovered_then_covered_itinerary() -> Itinerary:
+    leg = make_itinerary().legs[0]
+    return Itinerary(
+        total_time=480, transfer_count=1, total_walk_time=0, fare=1400,
+        legs=[leg.model_copy(update={"line_key": None}), leg], summary=["timer", "3호선"],
+    )
+
+
+def _watching(manager: JourneyManager) -> bool:
+    return manager._platform_task is not None and not manager._platform_task.done()
+
+
+async def test_platform_watch_records_snapshots_while_awaiting_board(live_manager):
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.05)
+    assert len(j.platform_snapshots) >= 2
+
+    await live_manager.board("3001")
+
+    assert live_manager._platform_task is None
+    assert len(j.platform_snapshots) == 0
+    fetched = live_manager.fetch_count
+    await asyncio.sleep(0.05)
+    assert live_manager.fetch_count == fetched
+
+
+async def test_platform_watch_not_started_for_uncovered_leg(live_manager):
+    itinerary = make_itinerary()
+    uncovered = itinerary.model_copy(update={"legs": [itinerary.legs[0].model_copy(update={"line_key": None})]})
+
+    await live_manager.start_journey(uncovered)
+
+    assert live_manager._platform_task is None
+
+
+async def test_platform_watch_stops_after_max_duration(live_manager, monkeypatch):
+    monkeypatch.setattr(journey_mod, "PLATFORM_WATCH_MAX_SECONDS", 0.03)
+    await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.1)
+
+    assert not _watching(live_manager)
+    fetched = live_manager.fetch_count
+    await asyncio.sleep(0.05)
+    assert live_manager.fetch_count == fetched
+
+
+async def test_platform_watch_continues_after_feed_error(live_manager, monkeypatch):
+    calls = []
+
+    async def flaky_fetch(base_url, line_id):
+        calls.append(line_id)
+        if len(calls) == 1:
+            raise SubwayApiError("feed hiccup")
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", flaky_fetch)
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.05)
+
+    assert len(calls) >= 2
+    assert len(j.platform_snapshots) >= 1
+
+
+async def test_platform_watch_restarts_on_transfer_missed_and_resume(live_manager):
+    j = await live_manager.start_journey(_uncovered_then_covered_itinerary())
+    assert not _watching(live_manager)  # first leg has no realtime feed
+
+    await live_manager.board(None)
+    await live_manager.alight()
+    assert j.leg_idx == 1 and _watching(live_manager)
+
+    await live_manager.board("3001")
+    assert not _watching(live_manager)
+    await live_manager.missed_train()
+    assert _watching(live_manager)
+
+    resumed = JourneyManager(live_manager.db, live_manager.settings)
+    resumed.resume_from_db()
+    assert _watching(resumed)
+    resumed._stop_platform_watch()
+
+    await live_manager.cancel()
+    assert not _watching(live_manager)
+
+
+async def test_leg_snapshot_reuses_recent_snapshot(live_manager, monkeypatch):
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    j = await live_manager.start_journey(make_itinerary())
+
+    await live_manager.leg_snapshot(max_age=10)
+    await live_manager.leg_snapshot(max_age=10)
+    assert live_manager.fetch_count == 1
+
+    await live_manager.leg_snapshot(max_age=0)
+    assert live_manager.fetch_count == 2
+    assert len(j.platform_snapshots) == 2
+
+
+async def test_concurrent_leg_snapshot_calls_share_one_fetch(live_manager, monkeypatch):
+    async def slow_fetch(base_url, line_id):
+        live_manager.fetch_count += 1
+        await asyncio.sleep(0.02)
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", slow_fetch)
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    await live_manager.start_journey(make_itinerary())
+
+    await asyncio.gather(live_manager.leg_snapshot(max_age=10), live_manager.leg_snapshot(max_age=10))
+
+    assert live_manager.fetch_count == 1
+
+
+async def test_leg_snapshot_drops_result_when_leg_changed_mid_fetch(live_manager, monkeypatch):
+    async def slow_fetch(base_url, line_id):
+        await asyncio.sleep(0.02)
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", slow_fetch)
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    first = await live_manager.start_journey(make_itinerary())
+    pending = asyncio.create_task(live_manager.leg_snapshot(max_age=0))
+    await asyncio.sleep(0.005)
+
+    await live_manager.cancel()
+    second = await live_manager.start_journey(make_itinerary())
+    await pending
+
+    assert len(first.platform_snapshots) == 0
+    assert len(second.platform_snapshots) == 0
+
+
+async def test_picker_snapshot_still_buffers_after_watch_cap(live_manager, monkeypatch):
+    monkeypatch.setattr(journey_mod, "PLATFORM_WATCH_MAX_SECONDS", 0.03)
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.1)
+    assert not _watching(live_manager)
+    buffered = len(j.platform_snapshots)
+
+    await live_manager.leg_snapshot(max_age=0)
+
+    assert len(j.platform_snapshots) == buffered + 1
+
+
+async def test_platform_polling_never_reaches_a_real_feed(manager, no_live_subway_feed):
+    await manager.start_journey(make_itinerary())
+    resumed = JourneyManager(manager.db, manager.settings)
+    resumed.resume_from_db()
+    await asyncio.sleep(0.01)
+    resumed._stop_platform_watch()
+
+    assert no_live_subway_feed
+    assert set(no_live_subway_feed) == {"http://subway.test"}
 
 
 async def test_starting_next_journey_keeps_completed_history_completed(manager):
@@ -1034,7 +1222,8 @@ async def test_resumed_onboard_history_keeps_live_anchor_and_does_not_replay_bac
     assert continued[-1] == TrackPoint(lat=37.4909, lon=127.0553, ts=1_000_120, estimated=False)
 
 
-async def test_onboard_later_leg_retains_transfer_walk_before_reconstructed_history(manager, monkeypatch):
+def _transfer_itinerary() -> Itinerary:
+    """Timer-mode 2호선 leg, a walk, then a covered 4호선 사당 → 충무로 → 서울역 leg."""
     first = SubwayLeg(
         route="수도권2호선", line_key=None, section_time=120,
         start_name="강남", end_name="사당",
@@ -1063,10 +1252,14 @@ async def test_onboard_later_leg_retains_transfer_walk_before_reconstructed_hist
             [37.5580, 126.9820], [37.5547, 126.9706],
         ],
     )
-    itinerary = Itinerary(
+    return Itinerary(
         total_time=480, transfer_count=1, total_walk_time=120, fare=1600,
         legs=[first, second], summary=["2호선", "도보", "4호선"],
     )
+
+
+async def test_onboard_later_leg_retains_transfer_walk_before_reconstructed_history(manager, monkeypatch):
+    itinerary = _transfer_itinerary()
 
     class FakeTime:
         @staticmethod
@@ -1441,3 +1634,152 @@ async def test_restart_resumes_only_existing_pending_claim_and_terminal_state_ca
     ).fetchone()[0] == 1
     gate.set()
     await resumed.shutdown()
+
+
+def _onboard(station_name: str, station_index: int, status: str, observed_at: int, train_no: str = "3001",
+             line: str = "3호선", terminus: str = "도곡") -> OnboardTrain:
+    return OnboardTrain(
+        train_no=train_no, line_name=line, terminus=terminus, direction_label=f"{terminus} 방면",
+        station_name=station_name, station_index=station_index, status=status,
+        observed_at=observed_at, matches_direction=True, is_express=False,
+    )
+
+
+YANGJAE = (37.4837, 127.0354)
+MAEBONG = (37.4870, 127.0468)
+
+
+async def test_onboard_uses_platform_snapshots_for_origin_arrival_and_departure(manager, monkeypatch):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    journey.platform_snapshots.extend([
+        (1000, _line3_snap("양재", "접근")), (1015, _line3_snap("양재", "도착")),
+        (1030, _line3_snap("양재", "도착")), (1045, _line3_snap("양재", "출발")),
+        (1060, _line3_snap("매봉", "접근")), (1075, _line3_snap("매봉", "도착")),
+    ])
+
+    await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "arrived", 1075))
+
+    points = manager.db.get_points(journey.id)
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=1007, estimated=True) in points
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=1037, estimated=True) in points
+    assert points[-1] == TrackPoint(lat=MAEBONG[0], lon=MAEBONG[1], ts=1075, estimated=False)
+    assert all(point.estimated for point in points[:-1])
+    assert manager.db.get_journey(journey.id)["leg_started_at"] == 1007
+    assert journey.anchor_phase == "station"
+    assert len(journey.platform_snapshots) == 0
+
+
+async def test_onboard_partial_snapshots_shift_schedule_for_unknown_origin_arrival(manager, monkeypatch):
+    # Recording began with the train already 도착 at 양재: its arrival is unknown,
+    # its departure brackets to 1007.5. Schedule (budget 120, dwell 30) from a
+    # departure observed at 매봉 at 1060 puts 양재 at 910/940, so the unknown
+    # arrival shifts by the same 67.5 s: 977.5.
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    journey.platform_snapshots.extend([
+        (1000, _line3_snap("양재", "도착")), (1015, _line3_snap("양재", "출발")),
+        (1030, _line3_snap("매봉", "접근")), (1045, _line3_snap("매봉", "도착")),
+        (1060, _line3_snap("매봉", "출발")),
+    ])
+
+    await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "departed", 1060))
+
+    points = manager.db.get_points(journey.id)
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=977, estimated=True) in points
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=1007, estimated=True) in points
+    # the current station keeps today's timing: arrival = observed_at - dwell
+    assert TrackPoint(lat=MAEBONG[0], lon=MAEBONG[1], ts=1030, estimated=True) in points
+    assert points[-1] == TrackPoint(lat=MAEBONG[0], lon=MAEBONG[1], ts=1060, estimated=False)
+    assert manager.db.get_journey(journey.id)["leg_started_at"] == 977
+    assert journey.anchor_phase == "segment"
+
+
+async def test_onboard_ignores_snapshot_bracket_wider_than_limit(manager, monkeypatch):
+    # 접근 → 도착 took 100 s between snapshots (> 45 s): arrival unknown;
+    # departure brackets to 1105, schedule 1080/1110 → arrival 1075.
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    journey.platform_snapshots.extend([
+        (1000, _line3_snap("양재", "접근")), (1100, _line3_snap("양재", "도착")),
+        (1110, _line3_snap("양재", "출발")),
+    ])
+
+    await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "arrived", 1200))
+
+    points = manager.db.get_points(journey.id)
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=1075, estimated=True) in points
+    assert TrackPoint(lat=YANGJAE[0], lon=YANGJAE[1], ts=1105, estimated=True) in points
+
+
+def _line4_snap(train_at: str, status: str) -> list[StationSnapshot]:
+    return [
+        StationSnapshot(
+            name=name, up=[],
+            dn=[TrainEntry(status=status, kind="일반", dest="서울역", no="4001")] if name == train_at else [],
+        )
+        for name in ("사당", "충무로", "서울역")
+    ]
+
+
+async def test_onboard_transfer_walk_ends_at_inferred_origin_arrival(manager, monkeypatch):
+    class FakeTime:
+        @staticmethod
+        def time():
+            return 900.0
+
+    monkeypatch.setattr(journey_mod, "time", FakeTime)
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(_transfer_itinerary())
+    await manager.board(None)
+    await manager.alight()
+    assert journey.leg_idx == 1
+    journey.platform_snapshots.extend([
+        (1000, _line4_snap("사당", "접근")), (1010, _line4_snap("사당", "도착")),
+        (1030, _line4_snap("사당", "도착")), (1040, _line4_snap("사당", "출발")),
+    ])
+
+    # Schedule alone would put the 사당 arrival (and the walk's end) at 1080.
+    await manager.begin_realtime_tracking_from_onboard(
+        _onboard("충무로", 1, "arrived", 1200, train_no="4001", line="4호선", terminus="서울역"),
+    )
+
+    # The walk (leg 0) ends at the inferred origin arrival; leg-0 ride points are all at 900.
+    assert max(point.ts for point in manager.db.get_points(journey.id, leg_idx=0)) == 1005
+    assert manager.db.get_journey(journey.id)["leg_started_at"] == 1005
+
+
+async def test_resumed_snapshot_inferred_arrival_keeps_station_anchor(manager, monkeypatch):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    journey.platform_snapshots.extend([
+        (1000, _line3_snap("양재", "접근")), (1015, _line3_snap("양재", "도착")),
+        (1030, _line3_snap("양재", "출발")), (1045, _line3_snap("매봉", "접근")),
+        (1060, _line3_snap("매봉", "도착")),
+    ])
+    await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "arrived", 1060))
+
+    resumed = JourneyManager(manager.db, manager.settings)
+    monkeypatch.setattr(resumed, "_start_tracker", lambda: None)
+    resumed.resume_from_db()
+
+    assert resumed.active.anchor_idx == 1
+    assert resumed.active.anchor_phase == "station"
+
+
+async def test_onboard_inference_logs_inferred_and_schedule_times(manager, monkeypatch, caplog):
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    journey = await manager.start_journey(make_itinerary())
+    # recording began after the train reached 양재: arrival falls back, departure is observed
+    journey.platform_snapshots.extend([
+        (1030, _line3_snap("양재", "도착")), (1045, _line3_snap("양재", "출발")),
+    ])
+
+    with caplog.at_level("INFO", logger="app.journey"):
+        await manager.begin_realtime_tracking_from_onboard(_onboard("매봉", 1, "arrived", 1075))
+
+    # epoch 955 = 09:15:55 KST (schedule origin), 1037.5 → 09:17:17, 1007.5 → 09:16:47
+    line = next(r.getMessage() for r in caplog.records if "onboard inference" in r.getMessage())
+    assert "train=3001" in line
+    assert "양재 arrival 09:16:47 (shifted; schedule 09:15:55)" in line
+    assert "양재 departure 09:17:17 (snapshot; schedule 09:16:25)" in line

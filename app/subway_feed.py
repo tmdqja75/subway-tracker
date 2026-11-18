@@ -228,7 +228,9 @@ async def locate_train(base_url: str, leg: SubwayLeg, train_no: str) -> LegTrain
     return LegTrainStatus(leg_index=leg_index, status=status, station_name=snapshot[raw_idx].name)
 
 
-async def fetch_boarding_context(base_url: str, leg: SubwayLeg, window: int = 3) -> list[str]:
+def boarding_context_from_snapshot(
+    snapshot: list[StationSnapshot], leg: SubwayLeg, window: int = 3,
+) -> list[str]:
     """Station names immediately before the boarding station, farthest to
     nearest, for the boarding-line diagram's "before" segment.
 
@@ -238,10 +240,6 @@ async def fetch_boarding_context(base_url: str, leg: SubwayLeg, window: int = 3)
     `window`) if the line/direction can't be resolved or the boarding station
     is near the line's own end.
     """
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None:
-        return []
-    snapshot = await fetch_line_snapshot(base_url, line_id)
     line_key = leg.line_key or ""
 
     indices = _leg_station_indices(snapshot, leg)
@@ -260,11 +258,9 @@ async def fetch_boarding_context(base_url: str, leg: SubwayLeg, window: int = 3)
     return list(reversed(names))
 
 
-async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[ArrivingTrain]:
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None:
-        return []
-    snapshot = await fetch_line_snapshot(base_url, line_id)
+def arrivals_from_snapshot(
+    snapshot: list[StationSnapshot], leg: SubwayLeg, limit: int = 3,
+) -> list[ArrivingTrain]:
     line_key = leg.line_key or ""
 
     indices = _leg_station_indices(snapshot, leg)
@@ -321,11 +317,11 @@ async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[
     ]
 
 
-async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float) -> list[OnboardTrain]:
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None or len(leg.stations) < 2:
+def onboard_candidates_from_snapshot(
+    snapshot: list[StationSnapshot], leg: SubwayLeg, *, now: float,
+) -> list[OnboardTrain]:
+    if len(leg.stations) < 2:
         return []
-    snapshot = await fetch_line_snapshot(base_url, line_id)
     line_key = leg.line_key or ""
 
     indices = _leg_station_indices(snapshot, leg)

@@ -243,11 +243,15 @@ persist outside the container.
   preceding segment, and a departed train in the following segment. The view
   does not present an arrived train as if it were still between stations.
 - The Seoul position feed provides only a current station-relative observation,
-  not a historic departure/stop timeline. For a train selected after the
-  origin, the tracker reconstructs the origin-to-current path from the leg's
-  scheduled time, including estimated station pauses. Those backfilled points
-  are explicitly marked as estimated; tracking after the live observation
-  continues normally.
+  not a historic departure/stop timeline. While a leg waits at the platform,
+  the server polls the line every 15 s (for up to an hour, app open or not)
+  and keeps those snapshots in memory. For a train selected after the origin,
+  the tracker places its arrival and departure at each station it already
+  passed between the two snapshots where its status changed (about ±8 s).
+  Anything the snapshots don't cover — e.g. recording started after the train
+  left, or the server restarted — falls back to the leg's scheduled time,
+  including estimated station pauses. All backfilled points are marked as
+  estimated; tracking after the live observation continues normally.
 - Realtime tracking uses adaptive polling: `POLL_INTERVAL_SECONDS` is the fast
   cadence near station events (default 5 s), while cruising between stations
   slows to about 30 s. The server starts polling fast again during the next

@@ -329,41 +329,55 @@ def test_database_clears_stale_route_cache_when_cache_format_version_changes(tmp
     assert version == ROUTE_OPTIONS_CACHE_FORMAT_VERSION
 
 
+class FakeFeedManager:
+    """Journey manager stand-in that serves one prepared line snapshot."""
+
+    def __init__(self, leg, snapshot=None, error=None):
+        self.active = SimpleNamespace(leg=leg)
+        self.snapshot = [] if snapshot is None else snapshot
+        self.error = error
+        self.snapshot_calls: list[float] = []
+        self.boarded: list = []
+        self.retroactive: list = []
+
+    async def leg_snapshot(self, max_age):
+        self.snapshot_calls.append(max_age)
+        if self.error is not None:
+            raise self.error
+        return self.snapshot
+
+    async def board(self, train_no):
+        self.boarded.append(train_no)
+
+    async def begin_realtime_tracking_from_onboard(self, onboard):
+        self.retroactive.append(onboard)
+
+
+def make_feed_app(tmp_path, manager) -> FastAPI:
+    app = make_app(Database(tmp_path / "tracker.db"))
+    app.state.manager = manager
+    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
+    return app
+
+
+def make_arrival(train_no: str = "approaching") -> ArrivingTrain:
+    return ArrivingTrain(
+        train_no=train_no, line_name="2호선", terminus="사당",
+        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
+        stations_away=1, stations_away_estimated=False,
+        matches_direction=True, is_express=False,
+    )
+
+
 def test_board_rechecks_that_selected_train_is_still_approaching(tmp_path, monkeypatch):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
-    boarded = []
+    manager = FakeFeedManager(make_itinerary().legs[0])
 
-    class Manager:
-        active = SimpleNamespace(leg=make_itinerary().legs[0])
-
-        async def board(self, train_no):
-            boarded.append(train_no)
-
-    async def fake_fetch_arrivals(*args, **kwargs):
-        return [
-            ArrivingTrain(
-                train_no="approaching",
-                line_name="2호선",
-                terminus="성수",
-                direction_label="성수행 - 역삼방면",
-                eta_seconds=60,
-                arrival_msg="역삼 전역 출발",
-                stations_away=1,
-                stations_away_estimated=False,
-                matches_direction=True,
-                is_express=False,
-            )
-        ]
-
-    async def unexpected_fetch_onboard_candidates(*args, **kwargs):
+    def unexpected_onboard(*args, **kwargs):
         raise AssertionError("ordinary boarding must not use onboard candidates")
 
-    app.state.manager = Manager()
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", unexpected_fetch_onboard_candidates)
-    client = TestClient(app)
+    monkeypatch.setattr("app.api.arrivals_from_snapshot", lambda snapshot, leg: [make_arrival()])
+    monkeypatch.setattr("app.api.onboard_candidates_from_snapshot", unexpected_onboard)
+    client = TestClient(make_feed_app(tmp_path, manager))
 
     stale = client.post("/api/journeys/current/board", json={"train_no": "departed"})
     current = client.post(
@@ -373,7 +387,8 @@ def test_board_rechecks_that_selected_train_is_still_approaching(tmp_path, monke
 
     assert stale.status_code == 409
     assert current.status_code == 200
-    assert boarded == ["approaching"]
+    assert manager.boarded == ["approaching"]
+    assert manager.snapshot_calls == [0, 0]
 
 
 def test_arrivals_on_uncovered_leg_returns_both_empty_train_lists(tmp_path):
@@ -405,36 +420,30 @@ def make_onboard_train(train_no: str = "onboard") -> OnboardTrain:
 
 
 def test_arrivals_returns_stable_arrival_and_onboard_candidate_lists(tmp_path, monkeypatch):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
     leg = make_itinerary().legs[0]
-    app.state.manager = SimpleNamespace(active=SimpleNamespace(leg=leg))
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    arrival = ArrivingTrain(
-        train_no="approaching", line_name="2호선", terminus="사당",
-        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
-        stations_away=1, stations_away_estimated=False,
-        matches_direction=True, is_express=False,
-    )
+    manager = FakeFeedManager(leg, snapshot=["one-snapshot"])
+    arrival = make_arrival()
     candidate = make_onboard_train()
-    calls = []
+    derived_from = []
 
-    async def fake_fetch_arrivals(*args, **kwargs):
+    def fake_arrivals(snapshot, current_leg):
+        derived_from.append(("arrivals", snapshot, current_leg))
         return [arrival]
 
-    async def fake_fetch_onboard_candidates(base_url, current_leg, *, now):
-        calls.append((base_url, current_leg, now))
+    def fake_onboard(snapshot, current_leg, *, now):
+        derived_from.append(("onboard", snapshot, current_leg, now))
         return [candidate]
 
-    async def fake_fetch_boarding_context(*args, **kwargs):
+    def fake_context(snapshot, current_leg):
+        derived_from.append(("context", snapshot, current_leg))
         return ["역삼", "선릉"]
 
-    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
-    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
+    monkeypatch.setattr("app.api.arrivals_from_snapshot", fake_arrivals)
+    monkeypatch.setattr("app.api.onboard_candidates_from_snapshot", fake_onboard)
+    monkeypatch.setattr("app.api.boarding_context_from_snapshot", fake_context)
     monkeypatch.setattr("app.api.time.time", lambda: 1_234)
 
-    response = TestClient(app).get("/api/journeys/current/arrivals")
+    response = TestClient(make_feed_app(tmp_path, manager)).get("/api/journeys/current/arrivals")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -443,179 +452,64 @@ def test_arrivals_returns_stable_arrival_and_onboard_candidate_lists(tmp_path, m
         "already_onboard": [candidate.model_dump()],
         "context_before": ["역삼", "선릉"],
     }
-    assert calls == [("http://subway.test", leg, 1_234)]
+    # one feed fetch per picker refresh; all three lists come from that snapshot
+    assert manager.snapshot_calls == [10]
+    assert derived_from == [
+        ("arrivals", ["one-snapshot"], leg),
+        ("onboard", ["one-snapshot"], leg, 1_234),
+        ("context", ["one-snapshot"], leg),
+    ]
 
 
-def test_arrivals_keeps_normal_trains_when_optional_onboard_lookup_fails(
-    tmp_path, monkeypatch, caplog
-):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
-    leg = make_itinerary().legs[0]
-    app.state.manager = SimpleNamespace(active=SimpleNamespace(leg=leg))
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    arrival = ArrivingTrain(
-        train_no="approaching", line_name="2호선", terminus="사당",
-        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
-        stations_away=1, stations_away_estimated=False,
-        matches_direction=True, is_express=False,
-    )
+def test_arrivals_returns_502_when_feed_fails(tmp_path):
+    manager = FakeFeedManager(make_itinerary().legs[0], error=SubwayApiError("feed unavailable"))
 
-    async def fake_fetch_arrivals(*args, **kwargs):
-        return [arrival]
+    response = TestClient(make_feed_app(tmp_path, manager)).get("/api/journeys/current/arrivals")
 
-    async def failed_fetch_onboard_candidates(*args, **kwargs):
-        raise SubwayApiError("onboard feed unavailable")
-
-    async def fake_fetch_boarding_context(*args, **kwargs):
-        return []
-
-    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", failed_fetch_onboard_candidates)
-    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
-
-    with caplog.at_level("WARNING", logger="app.api"):
-        response = TestClient(app).get("/api/journeys/current/arrivals")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "covered": True,
-        "trains": [arrival.model_dump()],
-        "already_onboard": [],
-        "context_before": [],
-    }
-    assert "optional onboard-candidate lookup failed" in caplog.text
+    assert response.status_code == 502
 
 
-def test_arrivals_keeps_normal_trains_when_optional_context_lookup_fails(
-    tmp_path, monkeypatch, caplog
-):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
-    leg = make_itinerary().legs[0]
-    app.state.manager = SimpleNamespace(active=SimpleNamespace(leg=leg))
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    arrival = ArrivingTrain(
-        train_no="approaching", line_name="2호선", terminus="사당",
-        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
-        stations_away=1, stations_away_estimated=False,
-        matches_direction=True, is_express=False,
-    )
+def test_retroactive_board_still_fails_when_onboard_lookup_fails(tmp_path):
+    manager = FakeFeedManager(make_itinerary().legs[0], error=SubwayApiError("onboard feed unavailable"))
 
-    async def fake_fetch_arrivals(*args, **kwargs):
-        return [arrival]
-
-    async def fake_fetch_onboard_candidates(*args, **kwargs):
-        return []
-
-    async def failed_fetch_boarding_context(*args, **kwargs):
-        raise SubwayApiError("subway feed unavailable")
-
-    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
-    monkeypatch.setattr("app.api.fetch_boarding_context", failed_fetch_boarding_context)
-
-    with caplog.at_level("WARNING", logger="app.api"):
-        response = TestClient(app).get("/api/journeys/current/arrivals")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "covered": True,
-        "trains": [arrival.model_dump()],
-        "already_onboard": [],
-        "context_before": [],
-    }
-    assert "optional boarding-context lookup failed" in caplog.text
-
-
-def test_retroactive_board_still_fails_when_onboard_lookup_fails(tmp_path, monkeypatch):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
-    app.state.manager = SimpleNamespace(active=SimpleNamespace(leg=make_itinerary().legs[0]))
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-
-    async def failed_fetch_onboard_candidates(*args, **kwargs):
-        raise SubwayApiError("onboard feed unavailable")
-
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", failed_fetch_onboard_candidates)
-
-    response = TestClient(app).post(
+    response = TestClient(make_feed_app(tmp_path, manager)).post(
         "/api/journeys/current/board",
         json={"train_no": "onboard", "retroactive": True},
     )
 
     assert response.status_code == 502
+    assert manager.retroactive == []
 
 
 def test_retroactive_board_uses_fresh_onboard_candidate_not_arrival_card(tmp_path, monkeypatch):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
+    manager = FakeFeedManager(make_itinerary().legs[0])
     candidate = make_onboard_train("fresh-onboard")
-    calls = {"board": [], "retroactive": []}
+    monkeypatch.setattr("app.api.onboard_candidates_from_snapshot", lambda snapshot, leg, *, now: [candidate])
 
-    class Manager:
-        active = SimpleNamespace(leg=make_itinerary().legs[0])
-
-        async def board(self, train_no):
-            calls["board"].append(train_no)
-
-        async def begin_realtime_tracking_from_onboard(self, onboard):
-            calls["retroactive"].append(onboard)
-
-    async def fake_fetch_onboard_candidates(base_url, leg, *, now):
-        return [candidate]
-
-    app.state.manager = Manager()
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
-
-    response = TestClient(app).post(
+    response = TestClient(make_feed_app(tmp_path, manager)).post(
         "/api/journeys/current/board",
         json={"train_no": candidate.train_no, "retroactive": True},
     )
 
     assert response.status_code == 200
-    assert calls == {"board": [], "retroactive": [candidate]}
+    assert (manager.boarded, manager.retroactive) == ([], [candidate])
+    assert manager.snapshot_calls == [0]
 
 
 def test_retroactive_board_rejects_candidate_that_disappeared_since_listing(tmp_path, monkeypatch):
-    db = Database(tmp_path / "tracker.db")
-    app = make_app(db)
+    manager = FakeFeedManager(make_itinerary().legs[0])
     candidate = make_onboard_train("moved-on")
-    calls = {"onboard": 0, "retroactive": []}
+    arrival_card = make_arrival(candidate.train_no)
+    onboard_calls = []
 
-    class Manager:
-        active = SimpleNamespace(leg=make_itinerary().legs[0])
+    def fake_onboard(snapshot, leg, *, now):
+        onboard_calls.append(now)
+        return [candidate] if len(onboard_calls) == 1 else []
 
-        async def board(self, train_no):
-            raise AssertionError("ordinary board must not run in retroactive mode")
-
-        async def begin_realtime_tracking_from_onboard(self, onboard):
-            calls["retroactive"].append(onboard)
-
-    arrival_card = ArrivingTrain(
-        train_no=candidate.train_no, line_name="2호선", terminus="사당",
-        direction_label="사당행", eta_seconds=0, arrival_msg="운행 중",
-        stations_away=1, stations_away_estimated=False,
-        matches_direction=True, is_express=False,
-    )
-
-    async def fake_fetch_arrivals(*args, **kwargs):
-        return [arrival_card]
-
-    async def fake_fetch_onboard_candidates(*args, **kwargs):
-        calls["onboard"] += 1
-        return [candidate] if calls["onboard"] == 1 else []
-
-    async def fake_fetch_boarding_context(*args, **kwargs):
-        return []
-
-    app.state.manager = Manager()
-    app.state.settings = SimpleNamespace(tmap_app_key="key", subway_api_url="http://subway.test")
-    monkeypatch.setattr("app.api.fetch_arrivals", fake_fetch_arrivals)
-    monkeypatch.setattr("app.api.fetch_onboard_candidates", fake_fetch_onboard_candidates)
-    monkeypatch.setattr("app.api.fetch_boarding_context", fake_fetch_boarding_context)
-    client = TestClient(app)
+    monkeypatch.setattr("app.api.arrivals_from_snapshot", lambda snapshot, leg: [arrival_card])
+    monkeypatch.setattr("app.api.onboard_candidates_from_snapshot", fake_onboard)
+    monkeypatch.setattr("app.api.boarding_context_from_snapshot", lambda snapshot, leg: [])
+    client = TestClient(make_feed_app(tmp_path, manager))
 
     listing = client.get("/api/journeys/current/arrivals")
     stale = client.post(
@@ -627,7 +521,9 @@ def test_retroactive_board_rejects_candidate_that_disappeared_since_listing(tmp_
     assert listing.json()["trains"] == [arrival_card.model_dump()]
     assert listing.json()["already_onboard"] == [candidate.model_dump()]
     assert stale.status_code == 409
-    assert calls == {"onboard": 2, "retroactive": []}
+    assert len(onboard_calls) == 2
+    assert manager.retroactive == []
+    assert manager.snapshot_calls == [10, 0]
 
 
 def make_history_itinerary(
