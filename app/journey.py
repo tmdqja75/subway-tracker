@@ -22,6 +22,7 @@ from .db import Database
 from .lines import LINE_KEY_TO_API_ID
 from .models import Itinerary, JourneyState, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from .notifications import NotificationSender
+from .platform_history import infer_station_events, merge_event_times
 from .reitti import ReittiError, commit_workbench_patch, push_points
 from .stations import normalize_name
 from .subway_feed import LegTrainStatus, StationSnapshot, SubwayApiError, fetch_line_snapshot, locate_train
@@ -369,6 +370,7 @@ class JourneyManager:
             raise ValueError("onboard candidate must be an OnboardTrain")
         self._validate_onboard_candidate(j, candidate)
         self._stop_platform_watch()
+        snapshots = list(j.platform_snapshots)
         j.platform_snapshots.clear()
 
         j.train_no = candidate.train_no
@@ -391,6 +393,24 @@ class JourneyManager:
         else:  # between: station_index is the reported next station
             origin_arrival = observed_at - (idx - 1) * budget - dwell - run / 2
 
+        if candidate.status != "between":
+            # Replace schedule guesses for stations the train already passed
+            # with times bracketed by the platform snapshots. The current
+            # station keeps its observation-based timing: an inferred point
+            # there would make a restart resume an arrived train as departed.
+            current_arrival = observed_at - dwell if candidate.status == "departed" else observed_at
+            events = infer_station_events(snapshots, j.leg, candidate.train_no)
+            if idx == 0:  # departed at the origin: only its arrival is in the past
+                schedule, inferred, upper = [origin_arrival], [events[0][0]], observed_at
+            else:
+                schedule = [origin_arrival + s * budget + phase * dwell for s in range(idx) for phase in (0, 1)]
+                inferred = [events[s][phase] for s in range(idx) for phase in (0, 1)]
+                upper = current_arrival
+            merged = merge_event_times(schedule, inferred, upper)
+            origin_arrival = merged[0]
+            arrivals = merged[0::2] + ([current_arrival] if idx else [])
+            departures = merged[1::2]
+
         # An onboard start skips the normal board() path, which is where the
         # preceding transfer's walk is usually recorded.  Finish that walk at
         # the reconstructed origin timestamp so it remains before the inferred
@@ -402,14 +422,14 @@ class JourneyManager:
         if candidate.status == "departed":
             # observed_at is approximate departure from idx; its arrival is
             # retained as an estimated pause before the live departure anchor.
-            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            self._write_history(j, arrivals, departures)
             j.logged_idx = idx
             j.last_arrival_time = observed_at - dwell
             j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "segment", observed_at
             lat, lon = j.leg.stations[idx].lat, j.leg.stations[idx].lon
         elif candidate.status in ("arrived", "approaching"):
             # observed_at is the station arrival for these feed statuses.
-            self._reconstruct_history(j, origin_arrival, idx, budget, dwell, run)
+            self._write_history(j, arrivals, departures)
             j.logged_idx = idx
             j.last_arrival_time = observed_at
             j.anchor_idx, j.anchor_phase, j.anchor_time = idx, "station", observed_at
@@ -550,19 +570,11 @@ class JourneyManager:
         partial_segment_fraction: float | None = None,
     ) -> None:
         """Write schedule-derived origin-to-anchor points, all marked estimated."""
-        origin = j.leg.stations[0]
-        self._emit_at(j, origin.lat, origin.lon, int(origin_arrival), estimated=True)
-        for station_idx in range(full_segments):
-            arrived_at = origin_arrival + station_idx * budget
-            departed_at = arrived_at + dwell
-            station = j.leg.stations[station_idx]
-            # Arrival and later departure preserve an explicit station pause.
-            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
-            geometry = self._segment_geometry(j, station_idx)
-            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
-                self._emit_at(
-                    j, point[0], point[1], int(departed_at + run * distance_fraction), estimated=True,
-                )
+        self._write_history(
+            j,
+            [origin_arrival + station_idx * budget for station_idx in range(full_segments + 1)],
+            [origin_arrival + station_idx * budget + dwell for station_idx in range(full_segments)],
+        )
         if partial_segment_fraction is not None:
             station_idx = full_segments
             arrived_at = origin_arrival + station_idx * budget
@@ -574,6 +586,26 @@ class JourneyManager:
                 self._emit_at(
                     j, point[0], point[1],
                     int(departed_at + run * partial_segment_fraction * distance_fraction), estimated=True,
+                )
+
+    def _write_history(self, j: ActiveJourney, arrivals: list[float], departures: list[float]) -> None:
+        """Write origin-to-anchor points from per-station times, all marked estimated.
+
+        `arrivals[s]`/`departures[s]` are station s's times; there is one fewer
+        departure than arrival. Hop geometry is spread by distance along the
+        Tmap shape between a departure and the next arrival.
+        """
+        origin = j.leg.stations[0]
+        self._emit_at(j, origin.lat, origin.lon, int(arrivals[0]), estimated=True)
+        for station_idx, departed_at in enumerate(departures):
+            station = j.leg.stations[station_idx]
+            # Arrival and later departure preserve an explicit station pause.
+            self._emit_at(j, station.lat, station.lon, int(departed_at), estimated=True)
+            run = arrivals[station_idx + 1] - departed_at
+            geometry = self._segment_geometry(j, station_idx)
+            for point, distance_fraction in zip(geometry, _distance_fractions(geometry)):
+                self._emit_at(
+                    j, point[0], point[1], int(departed_at + run * distance_fraction), estimated=True,
                 )
 
     async def alight(self) -> None:
