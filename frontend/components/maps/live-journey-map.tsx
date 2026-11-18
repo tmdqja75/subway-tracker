@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { getLineColor } from "../../lib/line-colors";
 import { TRAIN_ICON_SVG } from "../../lib/train-icon";
 import type { Coordinate, JourneyLegSnapshot, TrainStatus } from "../../lib/types";
 
@@ -26,6 +27,11 @@ type LeafletLayer = {
   remove: () => void;
 };
 
+type LeafletPolyline = LeafletLayer & { setLatLngs: (path: Coordinate[]) => unknown };
+
+/** Untraveled part of the route; the traveled part is drawn over it in the line color. */
+const UNTRAVELED_ROUTE_COLOR = "#C9CED4";
+
 type LeafletResource = {
   leaflet: {
     divIcon: (options: {
@@ -39,6 +45,7 @@ type LeafletResource = {
   map: { remove: () => void };
   routeLayer: LeafletLayer | null;
   tileLayer: LeafletLayer | null;
+  traveledLayer: LeafletPolyline | null;
   trainMarker: TrainMarker | null;
 };
 
@@ -100,11 +107,11 @@ function bearingDegrees(from: Coordinate, to: Coordinate): number {
 function pointAndHeadingAtDistanceFraction(
   geometry: Coordinate[],
   fraction: number,
-): { position: Coordinate; heading: number | undefined } {
+): { position: Coordinate; heading: number | undefined; segmentIndex: number } {
   const lengths = geometry.slice(1).map((point, index) => distanceMeters(geometry[index], point));
   const totalLength = lengths.reduce((total, length) => total + length, 0);
   if (totalLength <= 0) {
-    return { position: geometry[0], heading: undefined };
+    return { position: geometry[0], heading: undefined, segmentIndex: 0 };
   }
 
   const targetDistance = totalLength * Math.min(Math.max(fraction, 0), 1);
@@ -119,13 +126,17 @@ function pointAndHeadingAtDistanceFraction(
         start[0] + (end[0] - start[0]) * segmentFraction,
         start[1] + (end[1] - start[1]) * segmentFraction,
       ];
-      return { position, heading: length === 0 ? undefined : bearingDegrees(start, end) };
+      return { position, heading: length === 0 ? undefined : bearingDegrees(start, end), segmentIndex: index };
     }
     traversed += length;
   }
   const position = geometry[geometry.length - 1];
   const previous = geometry[geometry.length - 2];
-  return { position, heading: previous ? bearingDegrees(previous, position) : undefined };
+  return {
+    position,
+    heading: previous ? bearingDegrees(previous, position) : undefined,
+    segmentIndex: geometry.length - 2,
+  };
 }
 
 /**
@@ -139,7 +150,7 @@ function pointAndHeadingAtDistanceFraction(
 function resolveLiveTrainPlacement(
   leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
   train: TrainStatus,
-): { position: Coordinate; heading: number | undefined } | null {
+): { position: Coordinate; heading: number | undefined; shapeIndex: number } | null {
   if (!Number.isFinite(train.lat) || !Number.isFinite(train.lon) || train.station_index === null) {
     return null;
   }
@@ -178,7 +189,11 @@ function resolveLiveTrainPlacement(
   if (shapeEndIndex <= shapeStartIndex) {
     return null;
   }
-  return pointAndHeadingAtDistanceFraction(geometry.slice(shapeStartIndex, shapeEndIndex + 1), progress);
+  const { position, heading, segmentIndex } = pointAndHeadingAtDistanceFraction(
+    geometry.slice(shapeStartIndex, shapeEndIndex + 1),
+    progress,
+  );
+  return { position, heading, shapeIndex: shapeStartIndex + segmentIndex };
 }
 
 export function positionForLiveTrain(
@@ -191,10 +206,11 @@ export function positionForLiveTrain(
 /**
  * A train sitting exactly on a station node (e.g. "arrived") has no shape
  * segment to project onto, so resolveLiveTrainPlacement reports no heading.
- * Rather than defaulting to the icon's north-facing rest orientation, face
- * it toward the next station on the route. A null station_index (the
- * "before_leg" status, before the feed has located the train) is reported
- * with the leg's first station as its position, so treat it as index 0.
+ * Face it along the route's own tangent at that station: the path leaving
+ * it, or at the last station the path arriving into it. A null
+ * station_index (the "before_leg" status, before the feed has located the
+ * train) is reported with the leg's first station as its position, so
+ * treat it as index 0.
  */
 export function headingForLiveTrain(
   leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
@@ -205,16 +221,53 @@ export function headingForLiveTrain(
     return heading;
   }
   const stationIndex = train.station_index ?? 0;
-  if (stationIndex < 0 || stationIndex >= leg.stations.length - 1) {
+  const station = leg.stations[stationIndex];
+  if (!station) {
     return undefined;
   }
-  const start = leg.stations[stationIndex];
-  const end = leg.stations[stationIndex + 1];
-  return bearingDegrees([start.lat, start.lon], [end.lat, end.lon]);
+  const geometry = geometryForLiveLeg(leg);
+  if (geometry.length === 0) {
+    return undefined;
+  }
+  const index = closestShapeIndex(geometry, [station.lat, station.lon]);
+  const here = geometry[index];
+  const differs = (point: Coordinate) => point[0] !== here[0] || point[1] !== here[1];
+  const next = geometry.slice(index + 1).find(differs);
+  if (next) {
+    return bearingDegrees(here, next);
+  }
+  const previous = geometry.slice(0, index).reverse().find(differs);
+  return previous ? bearingDegrees(previous, here) : undefined;
 }
 
 function hasTrainPosition(train: TrainStatus | null): train is TrainStatus {
   return train !== null && Number.isFinite(train.lat) && Number.isFinite(train.lon);
+}
+
+/**
+ * The part of the route already covered: route points from the leg start up
+ * to wherever the train marker is drawn, ending exactly on the marker. Empty
+ * while the train isn't located on this leg yet.
+ */
+export function traveledPathForLiveTrain(
+  leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
+  train: TrainStatus | null,
+): Coordinate[] {
+  if (!hasTrainPosition(train) || train.station_index === null) {
+    return [];
+  }
+  const geometry = geometryForLiveLeg(leg);
+  const placement = resolveLiveTrainPlacement(leg, train);
+  let anchorIndex = placement?.shapeIndex;
+  if (anchorIndex === undefined) {
+    // "between" reports the next station; the train has only passed the one before it.
+    const anchorStation = leg.stations[train.status === "between" ? train.station_index - 1 : train.station_index];
+    if (!anchorStation) {
+      return [];
+    }
+    anchorIndex = closestShapeIndex(geometry, [anchorStation.lat, anchorStation.lon]);
+  }
+  return [...geometry.slice(0, anchorIndex + 1), placement?.position ?? [train.lat, train.lon]];
 }
 
 function syncTrainMarker(
@@ -222,6 +275,8 @@ function syncTrainMarker(
   leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
   train: TrainStatus | null,
 ) {
+  resource.traveledLayer?.setLatLngs(traveledPathForLiveTrain(leg, train));
+
   if (!hasTrainPosition(train)) {
     resource.trainMarker?.remove();
     resource.trainMarker = null;
@@ -265,6 +320,13 @@ function cleanupResource(resource: LeafletResource) {
     // Finish releasing the rest of the map resources even when a Leaflet cleanup fails.
   }
   resource.routeLayer = null;
+
+  try {
+    resource.traveledLayer?.remove();
+  } catch {
+    // Finish releasing the rest of the map resources even when a Leaflet cleanup fails.
+  }
+  resource.traveledLayer = null;
 
   try {
     resource.tileLayer?.remove();
@@ -316,6 +378,7 @@ export function LiveJourneyMap({ leg, train, journeyLegKey = "" }: LiveJourneyMa
           map,
           routeLayer: null,
           tileLayer: null,
+          traveledLayer: null,
           trainMarker: null,
         };
         resourceRef.current = resource;
@@ -327,9 +390,12 @@ export function LiveJourneyMap({ leg, train, journeyLegKey = "" }: LiveJourneyMa
           });
           resource.tileLayer.addTo(map);
           resource.routeLayer = geometry.length >= 2
-            ? leaflet.polyline(geometry, { color: "#183f70", opacity: 0.85, weight: 5 })
+            ? leaflet.polyline(geometry, { color: UNTRAVELED_ROUTE_COLOR, opacity: 0.9, weight: 5 })
             : null;
           resource.routeLayer?.addTo(map);
+          // Created after the route layer so it draws on top of it.
+          resource.traveledLayer = leaflet.polyline([], { color: getLineColor(leg.line_key), opacity: 0.95, weight: 6 });
+          resource.traveledLayer.addTo(map);
           const bounds = leaflet.latLngBounds(geometry);
 
           if (bounds.isValid()) {
