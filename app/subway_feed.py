@@ -228,13 +228,6 @@ async def locate_train(base_url: str, leg: SubwayLeg, train_no: str) -> LegTrain
     return LegTrainStatus(leg_index=leg_index, status=status, station_name=snapshot[raw_idx].name)
 
 
-async def fetch_boarding_context(base_url: str, leg: SubwayLeg, window: int = 3) -> list[str]:
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None:
-        return []
-    return boarding_context_from_snapshot(await fetch_line_snapshot(base_url, line_id), leg, window)
-
-
 def boarding_context_from_snapshot(
     snapshot: list[StationSnapshot], leg: SubwayLeg, window: int = 3,
 ) -> list[str]:
@@ -263,13 +256,6 @@ def boarding_context_from_snapshot(
             break
         names.append(snapshot[idx].name)
     return list(reversed(names))
-
-
-async def fetch_arrivals(base_url: str, leg: SubwayLeg, limit: int = 3) -> list[ArrivingTrain]:
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None:
-        return []
-    return arrivals_from_snapshot(await fetch_line_snapshot(base_url, line_id), leg, limit)
 
 
 def arrivals_from_snapshot(
@@ -329,13 +315,6 @@ def arrivals_from_snapshot(
         )
         for distance, entry, turnback in ranked[:limit]
     ]
-
-
-async def fetch_onboard_candidates(base_url: str, leg: SubwayLeg, *, now: float) -> list[OnboardTrain]:
-    line_id = LINE_KEY_TO_API_ID.get(leg.line_key or "")
-    if line_id is None or len(leg.stations) < 2:
-        return []
-    return onboard_candidates_from_snapshot(await fetch_line_snapshot(base_url, line_id), leg, now=now)
 
 
 def onboard_candidates_from_snapshot(

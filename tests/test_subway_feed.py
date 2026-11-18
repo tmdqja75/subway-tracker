@@ -265,26 +265,24 @@ async def test_locate_train_marks_leg_index_none_when_train_has_run_past_the_leg
     assert result.status == "arrived"
 
 
-from app.subway_feed import fetch_arrivals
+from app.subway_feed import (
+    _parse_snapshot,
+    arrivals_from_snapshot,
+    boarding_context_from_snapshot,
+    onboard_candidates_from_snapshot,
+)
 
 
-@respx.mock
-async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_arrivals_ranks_by_exact_stations_away():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "far"}]),
                 ("B", [], [{"status": "도착", "type": "급행", "dest": "D", "no": "near"}]),
                 ("C", [], []),
                 ("D", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("3호선", "C", "D")
 
-    trains = await fetch_arrivals("http://subway.test", leg)
+    trains = arrivals_from_snapshot(snapshot, leg)
 
     assert [t.train_no for t in trains] == ["near", "far"]
     assert [t.stations_away for t in trains] == [1, 2]
@@ -294,33 +292,21 @@ async def test_fetch_arrivals_ranks_by_exact_stations_away(monkeypatch):
     assert trains[0].eta_seconds == 0
 
 
-@respx.mock
-async def test_fetch_arrivals_line_2_uses_the_swapped_up_bucket(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_arrivals_line_2_uses_the_swapped_up_bucket():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [{"status": "출발", "type": "일반", "dest": "C", "no": "line2-forward"}], []),
                 ("B", [], []),
                 ("C", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("2호선", "B", "C")
 
-    trains = await fetch_arrivals("http://subway.test", leg)
+    trains = arrivals_from_snapshot(snapshot, leg)
 
     assert [train.train_no for train in trains] == ["line2-forward"]
 
 
-@respx.mock
-async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposite_direction(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_arrivals_excludes_departed_from_boarding_station_and_opposite_direction():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [], []),
                 (
                     "B",
@@ -328,28 +314,21 @@ async def test_fetch_arrivals_excludes_departed_from_boarding_station_and_opposi
                     [{"status": "출발", "type": "일반", "dest": "D", "no": "already-left"}],
                 ),
                 ("C", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("3호선", "B", "C")
 
-    trains = await fetch_arrivals("http://subway.test", leg)
+    trains = arrivals_from_snapshot(snapshot, leg)
 
     assert trains == []
 
 
-@respx.mock
-async def test_fetch_arrivals_offers_terminal_train_that_will_turn_back(monkeypatch):
+def test_arrivals_offers_terminal_train_that_will_turn_back():
     """At a line end, the feed can still label the arriving train inbound.
 
     It is boardable after it turns around, so it must not be hidden merely
     because it is in the direction-opposite bucket at the boarding station.
     """
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"신분당선": "103"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "103"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+    snapshot = _parse_snapshot(_payload(
                 (
                     "신사",
                     [{"status": "도착", "type": "일반", "dest": "신사", "no": "4"}],
@@ -357,12 +336,10 @@ async def test_fetch_arrivals_offers_terminal_train_that_will_turn_back(monkeypa
                 ),
                 ("논현", [], []),
                 ("신논현", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("신분당선", "신사", "논현", "신논현")
 
-    trains = await fetch_arrivals("http://subway.test", leg)
+    trains = arrivals_from_snapshot(snapshot, leg)
 
     assert [train.train_no for train in trains] == ["4"]
     assert trains[0].direction_label == "회차 후 신논현 방면"
@@ -371,153 +348,86 @@ async def test_fetch_arrivals_offers_terminal_train_that_will_turn_back(monkeypa
     assert trains[0].stations_away == 0
 
 
-@respx.mock
-async def test_fetch_arrivals_returns_empty_for_uncovered_line(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {})
-    leg = _leg("정체불명선", "A", "B")
-
-    assert await fetch_arrivals("http://subway.test", leg) == []
-
-
-from app.subway_feed import fetch_boarding_context
-
-
-@respx.mock
-async def test_fetch_boarding_context_returns_stations_before_boarding_farthest_to_nearest(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_boarding_context_returns_stations_before_boarding_farthest_to_nearest():
+    snapshot = _parse_snapshot(_payload(
                 ("W", [], []), ("X", [], []), ("Y", [], []),
                 ("Z", [], []), ("A", [], []), ("B", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("3호선", "Z", "A", "B")  # boarding at Z, travelling dn (Z -> A -> B)
 
-    context = await fetch_boarding_context("http://subway.test", leg)
+    context = boarding_context_from_snapshot(snapshot, leg)
 
     assert context == ["W", "X", "Y"]
 
 
-@respx.mock
-async def test_fetch_boarding_context_line_2_does_not_repeat_the_forward_leg(monkeypatch):
+def test_boarding_context_line_2_does_not_repeat_the_forward_leg():
     """A Line 2 loop can reach the next station in both directions.
 
     The context before 왕십리 must come from 한양대/뚝섬, not from the leg's
     own upcoming 상왕십리/신당/동대문역사문화공원 stations.
     """
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
     names = [f"역{i}" for i in range(43)]
     names[7:14] = ["동대문역사문화공원", "신당", "상왕십리", "왕십리", "한양대", "뚝섬", "성수"]
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
-        return_value=httpx.Response(200, json=_payload(*[(name, [], []) for name in names]))
-    )
+    snapshot = _parse_snapshot(_payload(*[(name, [], []) for name in names]))
     leg = _leg("2호선", "왕십리", "상왕십리", "신당", "동대문역사문화공원")
 
-    context = await fetch_boarding_context("http://subway.test", leg)
+    context = boarding_context_from_snapshot(snapshot, leg)
 
     assert context == ["성수", "뚝섬", "한양대"]
 
 
-@respx.mock
-async def test_fetch_boarding_context_truncates_near_the_line_start(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(("X", [], []), ("Y", [], []), ("Z", [], []), ("A", [], [])),
-        )
-    )
+def test_boarding_context_truncates_near_the_line_start():
+    snapshot = _parse_snapshot(_payload(("X", [], []), ("Y", [], []), ("Z", [], []), ("A", [], [])))
     leg = _leg("3호선", "Y", "Z", "A")  # only X exists before Y
 
-    context = await fetch_boarding_context("http://subway.test", leg)
+    context = boarding_context_from_snapshot(snapshot, leg)
 
     assert context == ["X"]
 
 
-@respx.mock
-async def test_fetch_boarding_context_returns_empty_for_uncovered_line(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {})
-    leg = _leg("정체불명선", "A", "B")
-
-    assert await fetch_boarding_context("http://subway.test", leg) == []
-
-
-from app.subway_feed import fetch_onboard_candidates
-
-
-@respx.mock
-async def test_fetch_onboard_candidates_includes_interior_arrived_and_departed_origin(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_onboard_candidates_includes_interior_arrived_and_departed_origin():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "left-origin"}]),
                 ("B", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "interior"}]),
                 ("C", [], []),
                 ("D", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("3호선", "A", "B", "C", "D")
 
-    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+    candidates = onboard_candidates_from_snapshot(snapshot, leg, now=1_000)
 
     assert {c.train_no: c.station_index for c in candidates} == {"left-origin": 0, "interior": 1}
     assert all(c.observed_at == 1_000 for c in candidates)
 
 
-@respx.mock
-async def test_fetch_onboard_candidates_excludes_at_origin_arrived_and_at_or_past_alighting(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"3호선": "3"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "3"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_onboard_candidates_excludes_at_origin_arrived_and_at_or_past_alighting():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-origin"}]),
                 ("B", [], []),
                 ("C", [], [{"status": "출발", "type": "일반", "dest": "D", "no": "at-penultimate"}]),
                 ("D", [], [{"status": "도착", "type": "일반", "dest": "D", "no": "at-alighting"}]),
-            ),
-        )
-    )
+            ))
     leg = _leg("3호선", "A", "B", "C", "D")
 
-    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+    candidates = onboard_candidates_from_snapshot(snapshot, leg, now=1_000)
 
     assert [c.train_no for c in candidates] == ["at-penultimate"]
 
 
-@respx.mock
-async def test_fetch_onboard_candidates_line_2_uses_the_swapped_up_bucket(monkeypatch):
-    monkeypatch.setattr("app.subway_feed.LINE_KEY_TO_API_ID", {"2호선": "2"})
-    respx.get("http://subway.test/subway/seoul", params={"lineId": "2"}).mock(
-        return_value=httpx.Response(
-            200,
-            json=_payload(
+def test_onboard_candidates_line_2_uses_the_swapped_up_bucket():
+    snapshot = _parse_snapshot(_payload(
                 ("A", [], []),
                 ("B", [{"status": "도착", "type": "일반", "dest": "D", "no": "line2-onboard"}], []),
                 ("C", [], []),
                 ("D", [], []),
-            ),
-        )
-    )
+            ))
     leg = _leg("2호선", "A", "B", "C", "D")
 
-    candidates = await fetch_onboard_candidates("http://subway.test", leg, now=1_000)
+    candidates = onboard_candidates_from_snapshot(snapshot, leg, now=1_000)
 
     assert [candidate.train_no for candidate in candidates] == ["line2-onboard"]
 
 
-from app.subway_feed import (
-    _parse_snapshot,
-    arrivals_from_snapshot,
-    boarding_context_from_snapshot,
-    onboard_candidates_from_snapshot,
-)
 
 
 def test_arrivals_from_snapshot_needs_no_network():

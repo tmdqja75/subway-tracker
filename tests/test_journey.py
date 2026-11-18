@@ -12,7 +12,7 @@ from app.db import Database
 from app.journey import ActiveJourney, JourneyManager, is_one_stop_remaining
 from app.models import Itinerary, JourneyState, LegStation, OnboardTrain, SubwayLeg, TrackPoint, TrainStatus
 from app.reitti import ReittiError
-from app.subway_feed import LegTrainStatus
+from app.subway_feed import LegTrainStatus, StationSnapshot, SubwayApiError, TrainEntry
 
 
 def make_itinerary(shape: list | None = None) -> Itinerary:
@@ -66,15 +66,203 @@ def test_history_estimated_column_migrates_existing_journeys(tmp_path: Path):
     assert migrated["history_estimated"] == 0
 
 
-@pytest.fixture
-def manager(tmp_path: Path, monkeypatch):
-    settings = Settings(
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
         subway_api_url="http://subway.test", tmap_app_key="k",
         reitti_url="http://reitti.test", reitti_token="t",
         poll_interval_seconds=0, db_path=tmp_path / "t.db",
         _env_file=None,
     )
-    return JourneyManager(Database(settings.db_path), settings)
+
+
+@pytest.fixture
+def manager(tmp_path: Path, monkeypatch):
+    manager = JourneyManager(Database(tmp_path / "t.db"), _settings(tmp_path))
+    # Platform polling has its own tests (live_manager); keep the rest quiet.
+    monkeypatch.setattr(manager, "_start_platform_watch", lambda: None)
+    return manager
+
+
+def _line3_snap(train_at: str | None = None, status: str = "") -> list[StationSnapshot]:
+    """양재 → 매봉 → 도곡 line snapshot; train 3001 (dn bucket) at `train_at`."""
+    return [
+        StationSnapshot(
+            name=name, up=[],
+            dn=[TrainEntry(status=status, kind="일반", dest="도곡", no="3001")] if name == train_at else [],
+        )
+        for name in ("양재", "매봉", "도곡")
+    ]
+
+
+@pytest.fixture
+async def live_manager(tmp_path: Path, monkeypatch):
+    manager = JourneyManager(Database(tmp_path / "t.db"), _settings(tmp_path))
+    manager.fetch_count = 0
+
+    async def fake_fetch_line_snapshot(base_url, line_id):
+        manager.fetch_count += 1
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", fake_fetch_line_snapshot)
+    monkeypatch.setattr(journey_mod, "PLATFORM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(manager, "_start_tracker", lambda: None)
+    yield manager
+    manager._stop_platform_watch()
+
+
+def _uncovered_then_covered_itinerary() -> Itinerary:
+    leg = make_itinerary().legs[0]
+    return Itinerary(
+        total_time=480, transfer_count=1, total_walk_time=0, fare=1400,
+        legs=[leg.model_copy(update={"line_key": None}), leg], summary=["timer", "3호선"],
+    )
+
+
+def _watching(manager: JourneyManager) -> bool:
+    return manager._platform_task is not None and not manager._platform_task.done()
+
+
+async def test_platform_watch_records_snapshots_while_awaiting_board(live_manager):
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.05)
+    assert len(j.platform_snapshots) >= 2
+
+    await live_manager.board("3001")
+
+    assert live_manager._platform_task is None
+    assert len(j.platform_snapshots) == 0
+    fetched = live_manager.fetch_count
+    await asyncio.sleep(0.05)
+    assert live_manager.fetch_count == fetched
+
+
+async def test_platform_watch_not_started_for_uncovered_leg(live_manager):
+    itinerary = make_itinerary()
+    uncovered = itinerary.model_copy(update={"legs": [itinerary.legs[0].model_copy(update={"line_key": None})]})
+
+    await live_manager.start_journey(uncovered)
+
+    assert live_manager._platform_task is None
+
+
+async def test_platform_watch_stops_after_max_duration(live_manager, monkeypatch):
+    monkeypatch.setattr(journey_mod, "PLATFORM_WATCH_MAX_SECONDS", 0.03)
+    await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.1)
+
+    assert not _watching(live_manager)
+    fetched = live_manager.fetch_count
+    await asyncio.sleep(0.05)
+    assert live_manager.fetch_count == fetched
+
+
+async def test_platform_watch_continues_after_feed_error(live_manager, monkeypatch):
+    calls = []
+
+    async def flaky_fetch(base_url, line_id):
+        calls.append(line_id)
+        if len(calls) == 1:
+            raise SubwayApiError("feed hiccup")
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", flaky_fetch)
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.05)
+
+    assert len(calls) >= 2
+    assert len(j.platform_snapshots) >= 1
+
+
+async def test_platform_watch_restarts_on_transfer_missed_and_resume(live_manager):
+    j = await live_manager.start_journey(_uncovered_then_covered_itinerary())
+    assert not _watching(live_manager)  # first leg has no realtime feed
+
+    await live_manager.board(None)
+    await live_manager.alight()
+    assert j.leg_idx == 1 and _watching(live_manager)
+
+    await live_manager.board("3001")
+    assert not _watching(live_manager)
+    await live_manager.missed_train()
+    assert _watching(live_manager)
+
+    resumed = JourneyManager(live_manager.db, live_manager.settings)
+    resumed.resume_from_db()
+    assert _watching(resumed)
+    resumed._stop_platform_watch()
+
+    await live_manager.cancel()
+    assert not _watching(live_manager)
+
+
+async def test_leg_snapshot_reuses_recent_snapshot(live_manager, monkeypatch):
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    j = await live_manager.start_journey(make_itinerary())
+
+    await live_manager.leg_snapshot(max_age=10)
+    await live_manager.leg_snapshot(max_age=10)
+    assert live_manager.fetch_count == 1
+
+    await live_manager.leg_snapshot(max_age=0)
+    assert live_manager.fetch_count == 2
+    assert len(j.platform_snapshots) == 2
+
+
+async def test_concurrent_leg_snapshot_calls_share_one_fetch(live_manager, monkeypatch):
+    async def slow_fetch(base_url, line_id):
+        live_manager.fetch_count += 1
+        await asyncio.sleep(0.02)
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", slow_fetch)
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    await live_manager.start_journey(make_itinerary())
+
+    await asyncio.gather(live_manager.leg_snapshot(max_age=10), live_manager.leg_snapshot(max_age=10))
+
+    assert live_manager.fetch_count == 1
+
+
+async def test_leg_snapshot_drops_result_when_leg_changed_mid_fetch(live_manager, monkeypatch):
+    async def slow_fetch(base_url, line_id):
+        await asyncio.sleep(0.02)
+        return _line3_snap()
+
+    monkeypatch.setattr(journey_mod, "fetch_line_snapshot", slow_fetch)
+    monkeypatch.setattr(live_manager, "_start_platform_watch", lambda: None)
+    first = await live_manager.start_journey(make_itinerary())
+    pending = asyncio.create_task(live_manager.leg_snapshot(max_age=0))
+    await asyncio.sleep(0.005)
+
+    await live_manager.cancel()
+    second = await live_manager.start_journey(make_itinerary())
+    await pending
+
+    assert len(first.platform_snapshots) == 0
+    assert len(second.platform_snapshots) == 0
+
+
+async def test_picker_snapshot_still_buffers_after_watch_cap(live_manager, monkeypatch):
+    monkeypatch.setattr(journey_mod, "PLATFORM_WATCH_MAX_SECONDS", 0.03)
+    j = await live_manager.start_journey(make_itinerary())
+    await asyncio.sleep(0.1)
+    assert not _watching(live_manager)
+    buffered = len(j.platform_snapshots)
+
+    await live_manager.leg_snapshot(max_age=0)
+
+    assert len(j.platform_snapshots) == buffered + 1
+
+
+async def test_platform_polling_never_reaches_a_real_feed(manager, no_live_subway_feed):
+    await manager.start_journey(make_itinerary())
+    resumed = JourneyManager(manager.db, manager.settings)
+    resumed.resume_from_db()
+    await asyncio.sleep(0.01)
+    resumed._stop_platform_watch()
+
+    assert no_live_subway_feed
+    assert set(no_live_subway_feed) == {"http://subway.test"}
 
 
 async def test_starting_next_journey_keeps_completed_history_completed(manager):
