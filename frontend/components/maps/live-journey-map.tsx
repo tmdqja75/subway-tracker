@@ -191,10 +191,11 @@ export function positionForLiveTrain(
 /**
  * A train sitting exactly on a station node (e.g. "arrived") has no shape
  * segment to project onto, so resolveLiveTrainPlacement reports no heading.
- * Rather than defaulting to the icon's north-facing rest orientation, face
- * it toward the next station on the route. A null station_index (the
- * "before_leg" status, before the feed has located the train) is reported
- * with the leg's first station as its position, so treat it as index 0.
+ * Face it along the route's own tangent at that station: the path leaving
+ * it, or at the last station the path arriving into it. A null
+ * station_index (the "before_leg" status, before the feed has located the
+ * train) is reported with the leg's first station as its position, so
+ * treat it as index 0.
  */
 export function headingForLiveTrain(
   leg: Pick<JourneyLegSnapshot, "shape" | "stations">,
@@ -205,12 +206,23 @@ export function headingForLiveTrain(
     return heading;
   }
   const stationIndex = train.station_index ?? 0;
-  if (stationIndex < 0 || stationIndex >= leg.stations.length - 1) {
+  const station = leg.stations[stationIndex];
+  if (!station) {
     return undefined;
   }
-  const start = leg.stations[stationIndex];
-  const end = leg.stations[stationIndex + 1];
-  return bearingDegrees([start.lat, start.lon], [end.lat, end.lon]);
+  const geometry = geometryForLiveLeg(leg);
+  if (geometry.length === 0) {
+    return undefined;
+  }
+  const index = closestShapeIndex(geometry, [station.lat, station.lon]);
+  const here = geometry[index];
+  const differs = (point: Coordinate) => point[0] !== here[0] || point[1] !== here[1];
+  const next = geometry.slice(index + 1).find(differs);
+  if (next) {
+    return bearingDegrees(here, next);
+  }
+  const previous = geometry.slice(0, index).reverse().find(differs);
+  return previous ? bearingDegrees(previous, here) : undefined;
 }
 
 function hasTrainPosition(train: TrainStatus | null): train is TrainStatus {

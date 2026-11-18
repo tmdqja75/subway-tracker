@@ -123,42 +123,28 @@ describe("LiveJourneyMap", () => {
     })).toEqual([3, 4]);
   });
 
-  it("faces an arrived train toward the next station instead of defaulting north", () => {
-    const curvedLeg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
+  it("faces a train stopped at a station along the route shape, not the straight line to the next station", () => {
+    const leg: Pick<JourneyLegSnapshot, "shape" | "stations"> = {
       ...activeJourneySnapshot.leg,
       stations: [
         { index: 0, name: "출발", lat: 0, lon: 0 },
         { index: 1, name: "정차", lat: 0, lon: 10 },
         { index: 2, name: "도착", lat: 0, lon: 20 },
       ],
-      shape: [[0, 0], [5, 5], [0, 10], [5, 15], [0, 20]] as Coordinate[],
+      // Leaves station 1 heading due north, and reaches station 2 heading due south.
+      shape: [[0, 0], [0, 5], [0, 10], [0, 10], [5, 10], [5, 20], [0, 20]] as Coordinate[],
     };
+    const at = (station_index: number | null, status: string, lon: number) => ({
+      ...activeJourneySnapshot.train!, station_index, status, lat: 0, lon,
+    });
 
-    expect(headingForLiveTrain(curvedLeg, {
-      ...activeJourneySnapshot.train!,
-      station_index: 1,
-      status: "arrived",
-      lat: 0,
-      lon: 10,
-    })).toBeCloseTo(90, 5);
-
-    expect(headingForLiveTrain(curvedLeg, {
-      ...activeJourneySnapshot.train!,
-      station_index: 2,
-      status: "arrived",
-      lat: 0,
-      lon: 20,
-    })).toBeUndefined();
-
-    // "before_leg": the feed hasn't located the train yet, so the backend
-    // reports station_index: null with the leg's first station as position.
-    expect(headingForLiveTrain(curvedLeg, {
-      ...activeJourneySnapshot.train!,
-      station_index: null,
-      status: "before_leg",
-      lat: 0,
-      lon: 0,
-    })).toBeCloseTo(90, 5);
+    // Duplicate [0, 10] is skipped; the old straight-line fallback gave 90.
+    expect(headingForLiveTrain(leg, at(1, "arrived", 10))).toBeCloseTo(0, 5);
+    expect(headingForLiveTrain(leg, at(1, "approaching", 10))).toBeCloseTo(0, 5);
+    // Last station: the direction it arrived from (old fallback gave undefined -> north).
+    expect(headingForLiveTrain(leg, at(2, "arrived", 20))).toBeCloseTo(180, 5);
+    // "before_leg": backend reports station_index null at the leg's first station.
+    expect(headingForLiveTrain(leg, at(null, "before_leg", 0))).toBeCloseTo(90, 5);
   });
 
   it("keeps a locally interpolated first-segment train on the curved Tmap path", () => {
